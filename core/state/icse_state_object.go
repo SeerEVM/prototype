@@ -148,7 +148,7 @@ func newEmptyStmStateAccount() *StmStateAccount {
 }
 
 // newStateAccount 新建一个空的，或者是从leveldb中读取
-func newStateAccount(data *types.StateAccount, statedb *StmStateDB, addrHash common.Hash) *SStateAccount {
+func newStateAccount(data *types.StateAccount, statedb *IcseStateDB, addrHash common.Hash) *SStateAccount {
 	// sa := newEmptyStmStateAccount()
 	stateAccount := newSStateAccount(data, nil, false, false, false)
 	// 该地址为合约地址，则需提取Code
@@ -196,7 +196,7 @@ type stmStateObject struct { // 多版本的object
 	address  common.Address
 	addrHash common.Hash    // hash of ethereum address of the account
 	data     *SStateAccount // committed account data (latest version)
-	db       *StmStateDB
+	db       *IcseStateDB
 
 	// Write caches.
 	trie Trie // storage trie, which becomes non-nil on first access
@@ -214,13 +214,11 @@ type stmStateObject struct { // 多版本的object
 type stateOperation struct {
 	incarnation int
 	account     *SStateAccount
-	estimate    bool
 }
 
 type storageOperation struct {
 	incarnation  int
 	storageValue common.Hash
-	estimate     bool
 }
 
 type slotMaps map[common.Hash]slotMap
@@ -234,7 +232,7 @@ func (s *stmStateObject) empty() bool {
 }
 
 // newStmStateObject creates a state object, 开始读读时候会新建
-func newStmStateObject(db *StmStateDB, address common.Address, data types.StateAccount) *stmStateObject {
+func newStmStateObject(db *IcseStateDB, address common.Address, data types.StateAccount) *stmStateObject {
 	//fmt.Println(address, data.Balance)
 	if data.Balance == nil {
 		data.Balance = new(big.Int)
@@ -257,7 +255,7 @@ func newStmStateObject(db *StmStateDB, address common.Address, data types.StateA
 	}
 }
 
-func createStmStateObject(db *StmStateDB, address common.Address) *stmStateObject {
+func createStmStateObject(db *IcseStateDB, address common.Address) *stmStateObject {
 	return &stmStateObject{
 		db:                  db,
 		address:             address,
@@ -318,7 +316,6 @@ func (s *stmStateObject) setState(index, incarnation int, writeSet *WriteSet) {
 	op := &stateOperation{
 		incarnation: incarnation,
 		account:     writeSet.Account,
-		estimate:    false,
 	}
 	s.multiVersionState.Store(index, op)
 }
@@ -331,7 +328,6 @@ func (s *stmStateObject) setStorage(index, incarnation int, writeSet *WriteSet) 
 		op := &storageOperation{
 			incarnation:  incarnation,
 			storageValue: value,
-			estimate:     false,
 		}
 		var smap slotMap
 		if v, ok := s.multiVersionStorage[key]; !ok {
@@ -342,25 +338,6 @@ func (s *stmStateObject) setStorage(index, incarnation int, writeSet *WriteSet) 
 		smap[index] = op
 		s.multiVersionStorage[key] = smap
 	}
-}
-
-// setStateEstimate sets the 'estimate' marker to indicate the tx abortion
-func (s *stmStateObject) setStateEstimate(index int) {
-	value, ok := s.multiVersionState.Load(index)
-	if ok {
-		op := value.(*stateOperation)
-		op.estimate = true
-		s.multiVersionState.Store(index, op)
-	}
-}
-
-// setStorageEstimate sets the 'estimate' marker to indicate the tx abortion
-func (s *stmStateObject) setStorageEstimate(index int, slot common.Hash) {
-	s.mvStorageMutex.Lock()
-	defer s.mvStorageMutex.Unlock()
-	smap, _ := s.multiVersionStorage[slot]
-	smap[index].estimate = true
-	s.multiVersionStorage[slot] = smap
 }
 
 // GetCommittedState retrieves a value from the committed account storage trie.

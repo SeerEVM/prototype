@@ -7,31 +7,30 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
 	"icse/core/types"
-	"icse/setting"
 	"math/big"
 	"sort"
 )
 
-var EstimateErr = fmt.Errorf("estimate", nil)
-
 // IcseTransaction is an Ethereum transaction.
 type IcseTransaction struct { // StmTransaction包含了一个stmTxStateDB，stmTxStateDB包含了一个StmStateDB，StmStateDB包含了一个官方提供的ethdb，且StmStateDB存储所有外部账户、合约账户的状态以及对应的状态
-	Tx          *types.Transaction
-	Index       int
-	Incarnation int
-	// 阻挡该交易执行的交易（依赖交易）
-	// BlockingTx    int
-	TxDB          *stmTxStateDB
-	readSet       []*ReadLoc
+	Tx             *types.Transaction
+	Index          int
+	Incarnation    int
+	StorageVersion int
+	//// 阻挡该交易执行的交易（依赖交易）
+	//BlockingTx    int
+	TxDB    *icseTxStateDB
+	readSet []*ReadLoc
+	// 本项目中没用该方法获取读集，用的是getDeletedStateObject中的process函数记录到readSet中
 	accessAddress *types.AccessAddressMap
 
-	// only error when reading estimate
-	dbErr error
+	//// only error when reading estimate
+	//dbErr error
 }
 
-// stmTxStateDB 临时存储单个交易执行过程中读取与更改的所有账户状态（每个新交易执⾏会创建⼀个实例，执⾏完释放）
-type stmTxStateDB struct {
-	statedb *StmStateDB
+// icseTxStateDB 临时存储单个交易执行过程中读取与更改的所有账户状态（每个新交易执⾏会创建⼀个实例，执⾏完释放）
+type icseTxStateDB struct {
+	statedb *IcseStateDB
 	// This map holds 'live' objects, which will get modified while processing a state transition.
 	stateObjects         map[common.Address]*stmTxStateObject
 	stateObjectsDirty    map[common.Address]struct{} // State objects modified in the current execution
@@ -86,13 +85,14 @@ func NewWriteSet(address common.Address, data *SStateAccount, slots map[common.H
 	}
 }
 
-// NewStmTransaction creates a new state from a given trie.
-func NewStmTransaction(tx *types.Transaction, index, incarnation int, statedb *StmStateDB) *IcseTransaction {
+// NewIcseTxStateDB creates a new icse transaction statedb
+func NewIcseTxStateDB(tx *types.Transaction, index, incarnation, storageVersion int, statedb *IcseStateDB) *IcseTransaction {
 	stmTx := &IcseTransaction{
-		Tx:          tx,
-		Index:       index,
-		Incarnation: incarnation,
-		TxDB: &stmTxStateDB{
+		Tx:             tx,
+		Index:          index,
+		Incarnation:    incarnation,
+		StorageVersion: storageVersion,
+		TxDB: &icseTxStateDB{
 			statedb:              statedb,
 			stateObjects:         make(map[common.Address]*stmTxStateObject),
 			stateObjectsDirty:    make(map[common.Address]struct{}),
@@ -105,7 +105,6 @@ func NewStmTransaction(tx *types.Transaction, index, incarnation int, statedb *S
 		},
 		readSet:       make([]*ReadLoc, 0, 100),
 		accessAddress: types.NewAccessAddressMap(),
-		dbErr:         nil,
 	}
 	return stmTx
 }
@@ -382,7 +381,7 @@ func (s *IcseTransaction) SetTransientState(addr common.Address, key, value comm
 func (s *IcseTransaction) setTransientState(addr common.Address, key, value common.Hash) {
 	s.TxDB.transientStorage.Set(addr, key, value)
 }
-func (sts *stmTxStateDB) setTransientState(addr common.Address, key, value common.Hash) {
+func (sts *icseTxStateDB) setTransientState(addr common.Address, key, value common.Hash) {
 	sts.transientStorage.Set(addr, key, value)
 }
 
@@ -397,7 +396,7 @@ func (s *IcseTransaction) GetTransientState(addr common.Address, key common.Hash
 //
 
 // 为了回滚
-func (sts *stmTxStateDB) getStateObject(addr common.Address) *stmTxStateObject {
+func (sts *icseTxStateDB) getStateObject(addr common.Address) *stmTxStateObject {
 	obj := sts.stateObjects[addr]
 	return obj
 }
@@ -422,17 +421,18 @@ func (s *IcseTransaction) getDeletedStateObject(addr common.Address) *stmTxState
 	if obj := s.TxDB.stateObjects[addr]; obj != nil { // 先搜寻单版本的tx_statedb中是否记录有该obj
 		return obj
 	}
-	readRes := s.TxDB.statedb.readStateVersion(addr, s.Index) // 非官方statedb函数，再搜寻多线程共享的statedb
-	if err := s.process(readRes, addr, nil); err != nil {
+	readRes := s.TxDB.statedb.readStateVersion(addr, s.StorageVersion) // 非官方statedb函数，再搜寻多线程共享的statedb
+	if err := s.process(readRes, addr, nil); err != nil {              // 写集在这里记录
 		//log.Println(err)
+		//notFound else readOK
 		if err.Error() == "notFound" {
 			return nil
 		}
 	}
-	// Here, we assume that the aborted tx is executed normally
+
 	// Insert into the live set
 	// 因为这里不负责处理tx abort事宜，abort消息包含在readRes里面在运行s.process函数时已经被传递给s.dbError
-	obj := newStmTxStateObject(s, s.TxDB.statedb, addr, *readRes.DirtyState.account, s.Index, s.Incarnation)
+	obj := newStmTxStateObject(s, s.TxDB.statedb, addr, *readRes.DirtyState.account, s.Index, s.Incarnation, s.StorageVersion)
 	s.setStateObject(obj) // 从statedb中获取的obj被加入tx_statedb
 	return obj
 }
@@ -442,7 +442,7 @@ func (s *IcseTransaction) setStateObject(object *stmTxStateObject) {
 }
 
 // 为了回滚
-func (sts *stmTxStateDB) setStateObject(object *stmTxStateObject) {
+func (sts *icseTxStateDB) setStateObject(object *stmTxStateObject) {
 	sts.stateObjects[object.Address()] = object
 }
 
@@ -461,7 +461,7 @@ func (s *IcseTransaction) createObjectWithoutRead(addr common.Address) *stmTxSta
 	stateAccount := SStateAccount{
 		StateAccount: types.NewStateAccount(0, new(big.Int).SetInt64(0), types.EmptyRootHash, types.EmptyCodeHash.Bytes()),
 	}
-	newObj := newStmTxStateObject(s, s.TxDB.statedb, addr, stateAccount, s.Index, s.Incarnation)
+	newObj := newStmTxStateObject(s, s.TxDB.statedb, addr, stateAccount, s.Index, s.Incarnation, s.StorageVersion)
 	s.TxDB.journal.append(stmCreateObjectChange{account: &addr})
 	s.setStateObject(newObj)
 	return newObj
@@ -471,9 +471,6 @@ func (s *IcseTransaction) createObjectWithoutRead(addr common.Address) *stmTxSta
 // the given address, it is overwritten and returned as the second return value.
 func (s *IcseTransaction) createObject(addr common.Address) (newObj, prev *stmTxStateObject) {
 	prev = s.getDeletedStateObject(addr) // Note, prev might have been deleted, we need that!
-	if s.dbErr != nil {
-		s.dbErr = nil
-	}
 
 	var prevdestruct bool
 	stateAccount := SStateAccount{
@@ -485,7 +482,7 @@ func (s *IcseTransaction) createObject(addr common.Address) (newObj, prev *stmTx
 			s.TxDB.stateObjectsDestruct[prev.address] = struct{}{}
 		}
 	}
-	newObj = newStmTxStateObject(s, s.TxDB.statedb, addr, stateAccount, s.Index, s.Incarnation)
+	newObj = newStmTxStateObject(s, s.TxDB.statedb, addr, stateAccount, s.Index, s.Incarnation, s.StorageVersion)
 	if prev == nil {
 		s.TxDB.journal.append(stmCreateObjectChange{account: &addr})
 	} else {
@@ -635,11 +632,7 @@ func (s *IcseTransaction) AccessAddress() *types.AccessAddressMap {
 
 // GetDBError if estimate,  abort
 func (s *IcseTransaction) GetDBError() error {
-	if setting.Estimate {
-		return s.dbErr
-	} else {
-		return nil
-	}
+	return nil
 }
 
 func (s *IcseTransaction) Validation(deleteEmptyObjects bool) {
@@ -665,29 +658,15 @@ func (s *IcseTransaction) Validation(deleteEmptyObjects bool) {
 
 // process processes the read result and adds the corresponding read operations to the read set
 func (s *IcseTransaction) process(res *ReadResult, addr common.Address, hash *common.Hash) error {
-	if hash == nil {
+	if hash == nil { //有hash则代表读账户storage，哈希为nil为读账户
 		if (res.Status == NOT_FOUND || res.Status == READ_OK) && res.DirtyState.account.StateAccount != nil {
 			s.addRead(addr, nil, res.Version)
 			return nil
-		}
-		if res.Status == READ_ERROR {
-			// read the marker 'estimate' and abort the current incarnation
-			s.BlockingTx = res.BlockingTx
-			if !res.DirtyState.account.deleted {
-				return errors.New("abort")
-			} else {
-				return errors.New("notFound")
-			}
 		}
 	} else {
 		if res.Status == NOT_FOUND || res.Status == READ_OK {
 			s.addRead(addr, hash, res.Version)
 			return nil
-		}
-		if res.Status == READ_ERROR {
-			// read the marker 'estimate' and abort the current incarnation
-			s.BlockingTx = res.BlockingTx
-			return errors.New("abort")
 		}
 	}
 	// the fetched state object is nil or the account data is nil (the newly created account)
@@ -702,12 +681,7 @@ func (s *IcseTransaction) addRead(addr common.Address, slot *common.Hash, ver *T
 }
 
 // OutputRWSet obtains read and write sets of a tx after the execution in VM
-func (s *IcseTransaction) OutputRWSet() (int, []*ReadLoc, WriteSets) {
-	// demonstrate that this tx is aborted
-	if s.BlockingTx > -1 {
-		return s.BlockingTx, nil, nil
-	}
-
+func (s *IcseTransaction) OutputRWSet() ([]*ReadLoc, WriteSets) {
 	var writeSets = make(WriteSets)
 
 	for addr := range s.TxDB.journal.dirties {
@@ -723,5 +697,5 @@ func (s *IcseTransaction) OutputRWSet() (int, []*ReadLoc, WriteSets) {
 		writeSets[addr] = writeSet
 	}
 
-	return -1, s.readSet, writeSets
+	return s.readSet, writeSets
 }

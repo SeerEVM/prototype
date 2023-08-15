@@ -8,6 +8,7 @@ import (
 type TxsItem struct {
 	StorageVersion int
 	Index          int
+	Incarnation    int
 }
 
 type TxsHeap struct {
@@ -24,13 +25,14 @@ func NewTxsHeap() *TxsHeap {
 	return h
 }
 
-func (h *TxsHeap) Push(StorageVersion int, Index int) {
+func (h *TxsHeap) Push(StorageVersion int, Index int, Incarnation int) {
 	h.mutex.Lock()
 	defer h.mutex.Unlock()
 
 	nodeToPush := &TxsItem{
 		StorageVersion: StorageVersion,
 		Index:          Index,
+		Incarnation:    Incarnation,
 	}
 	heap.Push(h.txsHeap, nodeToPush)
 }

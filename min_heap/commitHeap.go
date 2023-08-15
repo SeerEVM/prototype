@@ -7,6 +7,7 @@ import (
 
 type CommitItem struct {
 	Index          int
+	Incarnation    int
 	StorageVersion int
 }
 
@@ -24,12 +25,13 @@ func NewCommitHeap() *CommitHeap {
 	return h
 }
 
-func (h *CommitHeap) Push(Index int, StorageVersion int) {
+func (h *CommitHeap) Push(Index int, Incarnation int, StorageVersion int) {
 	h.mutex.Lock()
 	defer h.mutex.Unlock()
 
 	nodeToPush := &CommitItem{
 		Index:          Index,
+		Incarnation:    Incarnation,
 		StorageVersion: StorageVersion,
 	}
 	heap.Push(h.commitHeap, nodeToPush)

@@ -9,7 +9,7 @@ import (
 // reverted on demand.
 type stmJournalEntry interface {
 	// revert undoes the changes introduced by this stmJournal entry.
-	revert(db *stmTxStateDB)
+	revert(db *icseTxStateDB)
 
 	// dirtied returns the Ethereum address modified by this stmJournal entry.
 	dirtied() *common.Address
@@ -40,7 +40,7 @@ func (j *stmJournal) append(entry stmJournalEntry) {
 
 // revert undoes a batch of journalled modifications along with any reverted
 // dirty handling too.
-func (j *stmJournal) revert(statedb *stmTxStateDB, snapshot int) {
+func (j *stmJournal) revert(statedb *icseTxStateDB, snapshot int) {
 	for i := len(j.entries) - 1; i >= snapshot; i-- {
 		// Undo the changes made by the operation
 		j.entries[i].revert(statedb)
@@ -128,7 +128,7 @@ type (
 	}
 )
 
-func (ch stmCreateObjectChange) revert(s *stmTxStateDB) {
+func (ch stmCreateObjectChange) revert(s *icseTxStateDB) {
 	delete(s.stateObjects, *ch.account)
 	delete(s.stateObjectsDirty, *ch.account)
 }
@@ -137,7 +137,7 @@ func (ch stmCreateObjectChange) dirtied() *common.Address {
 	return ch.account
 }
 
-func (ch stmResetObjectChange) revert(s *stmTxStateDB) {
+func (ch stmResetObjectChange) revert(s *icseTxStateDB) {
 	s.setStateObject(ch.prev)
 	if !ch.prevdestruct {
 		delete(s.stateObjectsDestruct, ch.prev.address)
@@ -148,7 +148,7 @@ func (ch stmResetObjectChange) dirtied() *common.Address {
 	return nil
 }
 
-func (ch stmSuicideChange) revert(s *stmTxStateDB) {
+func (ch stmSuicideChange) revert(s *icseTxStateDB) {
 	obj := s.getStateObject(*ch.account)
 	if obj != nil {
 		obj.data.suicided = ch.prev
@@ -160,14 +160,14 @@ func (ch stmSuicideChange) dirtied() *common.Address {
 	return ch.account
 }
 
-func (ch stmTouchChange) revert(s *stmTxStateDB) {
+func (ch stmTouchChange) revert(s *icseTxStateDB) {
 }
 
 func (ch stmTouchChange) dirtied() *common.Address {
 	return ch.account
 }
 
-func (ch stmBalanceChange) revert(s *stmTxStateDB) {
+func (ch stmBalanceChange) revert(s *icseTxStateDB) {
 	s.getStateObject(*ch.account).setBalance(ch.prev)
 }
 
@@ -175,7 +175,7 @@ func (ch stmBalanceChange) dirtied() *common.Address {
 	return ch.account
 }
 
-func (ch stmNonceChange) revert(s *stmTxStateDB) {
+func (ch stmNonceChange) revert(s *icseTxStateDB) {
 	s.getStateObject(*ch.account).setNonce(ch.prev)
 }
 
@@ -183,7 +183,7 @@ func (ch stmNonceChange) dirtied() *common.Address {
 	return ch.account
 }
 
-func (ch stmCodeChange) revert(s *stmTxStateDB) {
+func (ch stmCodeChange) revert(s *icseTxStateDB) {
 	s.getStateObject(*ch.account).setCode(common.BytesToHash(ch.prevhash), ch.prevcode)
 }
 
@@ -191,7 +191,7 @@ func (ch stmCodeChange) dirtied() *common.Address {
 	return ch.account
 }
 
-func (ch stmStorageChange) revert(s *stmTxStateDB) {
+func (ch stmStorageChange) revert(s *icseTxStateDB) {
 	s.getStateObject(*ch.account).setState(ch.key, ch.prevalue)
 }
 
@@ -199,7 +199,7 @@ func (ch stmStorageChange) dirtied() *common.Address {
 	return ch.account
 }
 
-func (ch stmTransientStorageChange) revert(s *stmTxStateDB) {
+func (ch stmTransientStorageChange) revert(s *icseTxStateDB) {
 	s.setTransientState(*ch.account, ch.key, ch.prevalue)
 }
 
@@ -207,7 +207,7 @@ func (ch stmTransientStorageChange) dirtied() *common.Address {
 	return nil
 }
 
-func (ch stmRefundChange) revert(s *stmTxStateDB) {
+func (ch stmRefundChange) revert(s *icseTxStateDB) {
 	s.refund = ch.prev
 }
 
@@ -215,7 +215,7 @@ func (ch stmRefundChange) dirtied() *common.Address {
 	return nil
 }
 
-func (ch stmAddLogChange) revert(s *stmTxStateDB) {
+func (ch stmAddLogChange) revert(s *icseTxStateDB) {
 	logs := s.logs[ch.txhash]
 	if len(logs) == 1 {
 		delete(s.logs, ch.txhash)
@@ -229,7 +229,7 @@ func (ch stmAddLogChange) dirtied() *common.Address {
 	return nil
 }
 
-func (ch stmAddPreimageChange) revert(s *stmTxStateDB) {
+func (ch stmAddPreimageChange) revert(s *icseTxStateDB) {
 	delete(s.preimages, ch.hash)
 }
 
@@ -237,7 +237,7 @@ func (ch stmAddPreimageChange) dirtied() *common.Address {
 	return nil
 }
 
-func (ch stmAccessListAddAccountChange) revert(s *stmTxStateDB) {
+func (ch stmAccessListAddAccountChange) revert(s *icseTxStateDB) {
 	/*
 		One important invariant here, is that whenever a (addr, slot) is added, if the
 		addr is not already present, the add causes two stmJournal entries:
@@ -254,7 +254,7 @@ func (ch stmAccessListAddAccountChange) dirtied() *common.Address {
 	return nil
 }
 
-func (ch stmAccessListAddSlotChange) revert(s *stmTxStateDB) {
+func (ch stmAccessListAddSlotChange) revert(s *icseTxStateDB) {
 	s.accessList.DeleteSlot(*ch.address, *ch.slot)
 }
 

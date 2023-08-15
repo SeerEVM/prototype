@@ -7,6 +7,7 @@ import (
 
 type ReadyItem struct {
 	Index          int
+	Incarnation    int
 	StorageVersion int
 }
 
@@ -24,12 +25,13 @@ func NewReadyHeap() *ReadyHeap {
 	return h
 }
 
-func (h *ReadyHeap) Push(Index int, StorageVersion int) {
+func (h *ReadyHeap) Push(Index int, Incarnation int, StorageVersion int) {
 	h.mutex.Lock()
 	defer h.mutex.Unlock()
 
 	nodeToPush := &ReadyItem{
 		Index:          Index,
+		Incarnation:    Incarnation,
 		StorageVersion: StorageVersion,
 	}
 	heap.Push(h.readyHeap, nodeToPush)

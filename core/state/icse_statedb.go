@@ -18,14 +18,14 @@ import (
 	"time"
 )
 
-// StmStateDB structs within the ethereum protocol are used to store anything
+// IcseStateDB structs within the ethereum protocol are used to store anything
 // within the merkle trie. StateDBs take care of caching and storing
 // nested states. It's the general query interface to retrieve:
 // * Contracts
 // * Accounts
 //
 // 这个是仿照官方文件statedb.go改的
-type StmStateDB struct {
+type IcseStateDB struct {
 	db         Database
 	prefetcher *triePrefetcher
 	trie       Trie
@@ -48,8 +48,8 @@ type StmStateDB struct {
 	stateObjectsDirty    map[common.Address]struct{} // State objects modified in the current execution
 	stateObjectsDestruct map[common.Address]struct{} // State objects destructed in the block (contract destruction)
 
-	// 记录每个交易上次执行的写入的位置 map[int][]*Location
-	lastWrites sync.Map
+	//// 记录每个交易上次执行的写入的位置 map[int][]*Location
+	//lastWrites sync.Map
 	// 记录每个交易上次执行的读取的位置 map[int][]*ReadLoc
 	lastReads sync.Map
 
@@ -57,7 +57,7 @@ type StmStateDB struct {
 	// State objects are used by the consensus core and VM which are
 	// unable to deal with database-level errors. Any error that occurs
 	// during a database read is memoized here and will eventually be
-	// returned by StmStateDB.Commit. Notably, this error is also shared
+	// returned by IcseStateDB.Commit. Notably, this error is also shared
 	// by all cached state objects in case the database failure occurs
 	// when accessing state of accounts.
 	dbErr error
@@ -150,13 +150,13 @@ func (loc *Location) exist(compared []*Location) bool {
 	return false
 }
 
-// NewStmStateDB creates a new state from a given trie.
-func NewStmStateDB(root common.Hash, db Database, snaps *snapshot.Tree) (*StmStateDB, error) {
+// NewIcseStateDB creates a new state from a given trie.
+func NewIcseStateDB(root common.Hash, db Database, snaps *snapshot.Tree) (*IcseStateDB, error) {
 	tr, err := db.OpenTrie(root)
 	if err != nil {
 		return nil, err
 	}
-	sdb := &StmStateDB{
+	sdb := &IcseStateDB{
 		db:           db,
 		trie:         tr,
 		originalRoot: root,
@@ -179,7 +179,7 @@ func NewStmStateDB(root common.Hash, db Database, snaps *snapshot.Tree) (*StmSta
 // StartPrefetcher initializes a new trie prefetcher to pull in nodes from the
 // state trie concurrently while the state is mutated so that when we reach the
 // commit phase, most of the needed data is already hot.
-func (s *StmStateDB) StartPrefetcher(namespace string) {
+func (s *IcseStateDB) StartPrefetcher(namespace string) {
 	if s.prefetcher != nil {
 		s.prefetcher.close()
 		s.prefetcher = nil
@@ -191,7 +191,7 @@ func (s *StmStateDB) StartPrefetcher(namespace string) {
 
 // StopPrefetcher terminates a running prefetcher and reports any leftover stats
 // from the gathered metrics.
-func (s *StmStateDB) StopPrefetcher() {
+func (s *IcseStateDB) StopPrefetcher() {
 	if s.prefetcher != nil {
 		s.prefetcher.close()
 		s.prefetcher = nil
@@ -199,19 +199,19 @@ func (s *StmStateDB) StopPrefetcher() {
 }
 
 // setError remembers the first non-nil error it is called with.
-func (s *StmStateDB) setError(err error) {
+func (s *IcseStateDB) setError(err error) {
 	if s.dbErr == nil {
 		s.dbErr = err
 	}
 }
 
 // Database retrieves the low level database supporting the lower level trie ops.
-func (s *StmStateDB) Database() Database {
+func (s *IcseStateDB) Database() Database {
 	return s.db
 }
 
 // GetState retrieves a value from the given account's storage trie.
-//func (s *StmStateDB) GetState(addr common.Address, hash common.Hash, txIndex, txIncarnation int) common.Hash {
+//func (s *IcseStateDB) GetState(addr common.Address, hash common.Hash, txIndex, txIncarnation int) common.Hash {
 //	stmStateObject, _ := s.getDeletedStateObject(addr)
 //	if stmStateObject != nil {
 //		stateAccount := stmStateObject.data.StateAccount[stmStateObject.data.len-1]
@@ -223,39 +223,21 @@ func (s *StmStateDB) Database() Database {
 //}
 
 // Record updates the read and write sets of a new incarnation of tx
-func (s *StmStateDB) Record(ver *TxInfoMini, readSet []*ReadLoc, writeSet WriteSets) bool {
+func (s *IcseStateDB) Record(ver *TxInfoMini, readSet []*ReadLoc, writeSet WriteSets) {
 	s.lastReads.Store(ver.Index, readSet)
-	wroteNew := s.updateWrittenLocations(ver.Index, writeSet)
 	s.applyWrites(ver.Index, ver.Incarnation, writeSet)
-	return wroteNew
 }
 
-// MarkEstimates marks the last written locations 'estimate' after being aborted
-func (s *StmStateDB) MarkEstimates(index int) {
-	value, _ := s.lastWrites.Load(index)
-	prevLocations := value.([]*Location)
-	for _, loc := range prevLocations {
-		if v, exist := s.stateObjects.Load(loc.stateAddress); exist {
-			obj := v.(*stmStateObject)
-			if loc.storageMarker {
-				obj.setStorageEstimate(index, loc.storageSlot)
-			} else {
-				obj.setStateEstimate(index)
-			}
-		}
-	}
-}
-
-// readStorageVersion reads the latest version at a specific account address
-func (s *StmStateDB) readStateVersion(addr common.Address, index int) *ReadResult {
+// readStateVersion 给定一个storageVersion（快照版本号），如论文中描述，该交易只能读到不超过该版本的state数据
+func (s *IcseStateDB) readStateVersion(addr common.Address, storageVersion int) *ReadResult {
 	var txIndexes []int
 	res := newReadResult()
 
 	if obj := s.getDeletedStateObject(addr); obj != nil {
 		obj.multiVersionState.Range(func(key, value any) bool {
 			id := key.(int)
-			// find the maximum id smaller than the current tx index
-			if id < index {
+			// find the maximum id smaller than storageVersion
+			if id <= storageVersion {
 				txIndexes = append(txIndexes, id)
 			}
 			return true
@@ -267,7 +249,6 @@ func (s *StmStateDB) readStateVersion(addr common.Address, index int) *ReadResul
 			op := &stateOperation{
 				incarnation: -1,
 				account:     obj.data,
-				estimate:    false,
 			}
 			obj.multiVersionState.Store(-1, op)
 			res.DirtyState = op
@@ -278,11 +259,7 @@ func (s *StmStateDB) readStateVersion(addr common.Address, index int) *ReadResul
 		maxIndex := txIndexes[len(txIndexes)-1]
 		v, _ := obj.multiVersionState.Load(maxIndex)
 		op := v.(*stateOperation)
-		if op.estimate == true {
-			// if the latest version is aborted
-			res.Status = READ_ERROR
-			res.BlockingTx = maxIndex
-		} else if op.estimate == false && !op.account.deleted { // 这里还有第3种情况没有标明？
+		if !op.account.deleted { // 这里还有第3种情况没有标明？
 			res.Status = READ_OK
 		}
 		res.Version = &TxInfoMini{Index: maxIndex, Incarnation: op.incarnation}
@@ -293,7 +270,7 @@ func (s *StmStateDB) readStateVersion(addr common.Address, index int) *ReadResul
 }
 
 // readStorageVersion reads the latest version at a specific storage slot
-func (s *StmStateDB) readStorageVersion(addr common.Address, hash common.Hash, index int) *ReadResult {
+func (s *IcseStateDB) readStorageVersion(addr common.Address, hash common.Hash, storageVersion int) *ReadResult {
 	var txIndexes []int
 	res := newReadResult()
 	// Tx that creates a contract account may be aborted after the first incarnation,
@@ -311,7 +288,6 @@ func (s *StmStateDB) readStorageVersion(addr common.Address, hash common.Hash, i
 			op := &storageOperation{
 				incarnation:  -1,
 				storageValue: value,
-				estimate:     false,
 			}
 			smap = make(slotMap)
 			smap[-1] = op
@@ -321,7 +297,7 @@ func (s *StmStateDB) readStorageVersion(addr common.Address, hash common.Hash, i
 		}
 
 		for id := range smap {
-			if id < index {
+			if id < storageVersion {
 				txIndexes = append(txIndexes, id)
 			}
 		}
@@ -329,12 +305,7 @@ func (s *StmStateDB) readStorageVersion(addr common.Address, hash common.Hash, i
 		maxIndex := txIndexes[len(txIndexes)-1]
 		op := smap[maxIndex]
 		// if the latest version is aborted
-		if op.estimate == true {
-			res.Status = READ_ERROR
-			res.BlockingTx = maxIndex
-		} else {
-			res.Status = READ_OK
-		}
+		res.Status = READ_OK
 
 		res.Version = &TxInfoMini{Index: maxIndex, Incarnation: op.incarnation}
 		res.DirtyStorage = op
@@ -344,7 +315,7 @@ func (s *StmStateDB) readStorageVersion(addr common.Address, hash common.Hash, i
 }
 
 // ValidateReadSet validates the fetched read-set during last execution
-func (s *StmStateDB) ValidateReadSet(index int) bool {
+func (s *IcseStateDB) ValidateReadSet(index int) bool {
 	v, _ := s.lastReads.Load(index)
 	res := v.([]*ReadLoc)
 	for _, read := range res {
@@ -354,7 +325,7 @@ func (s *StmStateDB) ValidateReadSet(index int) bool {
 		} else {
 			curRes = s.readStorageVersion(read.Location.stateAddress, read.Location.storageSlot, index)
 		}
-		if curRes.Status == READ_ERROR || curRes.Status == NOT_FOUND {
+		if curRes.Status == NOT_FOUND {
 			return false
 		} else if curRes.Status == READ_OK && !curRes.Version.Compare(read.Version) {
 			return false
@@ -363,62 +334,8 @@ func (s *StmStateDB) ValidateReadSet(index int) bool {
 	return true
 }
 
-// updateWrittenLocations updates the last written memory locations if a new incarnation of tx writes to new memory locations
-func (s *StmStateDB) updateWrittenLocations(index int, writeSets WriteSets) bool {
-	var (
-		wroteNew  bool
-		locations []*Location
-	)
-
-	// convert writeSets to a set of locations
-	for addr, write := range writeSets {
-		if write.stateModified {
-			loc := newLocation(addr, nil)
-			locations = append(locations, loc)
-		}
-		if write.storageModified {
-			for key := range write.AccessedSlots {
-				loc := newLocation(addr, &key)
-				locations = append(locations, loc)
-			}
-		}
-	}
-
-	value, ok := s.lastWrites.Load(index)
-	if !ok {
-		// the first incarnation of tx
-		wroteNew = true
-	} else {
-		prevLocations := value.([]*Location)
-		for _, loc := range prevLocations {
-			exist := loc.exist(locations)
-			if !exist {
-				// remove this stored entry
-				v, _ := s.stateObjects.Load(loc.stateAddress)
-				obj := v.(*stmStateObject)
-				if loc.storageMarker {
-					obj.mvStorageMutex.Lock()
-					smap, ok2 := obj.multiVersionStorage[loc.storageSlot]
-					if ok2 {
-						if _, noDeleted := smap[index]; noDeleted {
-							delete(smap, index)
-						}
-					}
-					obj.mvStorageMutex.Unlock()
-				} else {
-					obj.multiVersionState.Delete(index)
-				}
-				wroteNew = true
-			}
-		}
-	}
-
-	s.lastWrites.Store(index, locations)
-	return wroteNew
-}
-
 // applyWrites updates state or storage version  according to tx's write sets
-func (s *StmStateDB) applyWrites(index, incarnation int, writeSets WriteSets) {
+func (s *IcseStateDB) applyWrites(index, incarnation int, writeSets WriteSets) {
 	for addr, write := range writeSets {
 		obj := s.getDeletedStateObject(addr)
 		// if the account is newly created in this block
@@ -446,7 +363,7 @@ func (s *StmStateDB) applyWrites(index, incarnation int, writeSets WriteSets) {
 	}
 }
 
-//func (s *StmStateDB) getStateAccount(addr common.Address, txIndex, txIncarnation int) *SStateAccount {
+//func (s *IcseStateDB) getStateAccount(addr common.Address, txIndex, txIncarnation int) *SStateAccount {
 //	if obj, _ := s.getDeletedStateObject(addr); obj != nil {
 //		// stateAccount := obj.data.StateAccount[obj.data.len-1]
 //		stateAccount := obj.data.StateAccount[0]
@@ -462,7 +379,7 @@ func (s *StmStateDB) applyWrites(index, incarnation int, writeSets WriteSets) {
 // flag set. This is needed by the state journal to revert to the correct s-
 // destructed object instead of wiping all knowledge about the state object.
 // the boolean value is returned to indicate whether the state can be fetched from the memory
-func (s *StmStateDB) getDeletedStateObject(addr common.Address) *stmStateObject {
+func (s *IcseStateDB) getDeletedStateObject(addr common.Address) *stmStateObject {
 	// Prefer live objects if any is available
 	s.objectMutex.Lock()
 	defer s.objectMutex.Unlock()
@@ -527,11 +444,11 @@ func (s *StmStateDB) getDeletedStateObject(addr common.Address) *stmStateObject 
 	return newObj
 }
 
-//func (s *StmStateDB) setStateObject(object *stmStateObject) {
+//func (s *IcseStateDB) setStateObject(object *stmStateObject) {
 //	s.stateObjects[object.Address()] = object
 //}
 
-func (s *StmStateDB) setStateObject(object *stmStateObject) (*stmStateObject, bool) {
+func (s *IcseStateDB) setStateObject(object *stmStateObject) (*stmStateObject, bool) {
 	//s.objectMutex.Lock()
 	//obj, ok := s.stateObjects.Load(object.Address())
 	//if !ok {
@@ -543,7 +460,7 @@ func (s *StmStateDB) setStateObject(object *stmStateObject) (*stmStateObject, bo
 }
 
 // updateStateObject writes the given object to the trie.
-func (s *StmStateDB) updateStateObject(obj *stmStateObject) {
+func (s *IcseStateDB) updateStateObject(obj *stmStateObject) {
 	// Track the amount of time wasted on updating the account from the trie
 	if metrics.EnabledExpensive {
 		defer func(start time.Time) { s.AccountUpdates += time.Since(start) }(time.Now())
@@ -564,7 +481,7 @@ func (s *StmStateDB) updateStateObject(obj *stmStateObject) {
 }
 
 // deleteStateObject removes the given object from the state trie.
-func (s *StmStateDB) deleteStateObject(obj *stmStateObject) {
+func (s *IcseStateDB) deleteStateObject(obj *stmStateObject) {
 	// Track the amount of time wasted on deleting the account from the trie
 	if metrics.EnabledExpensive {
 		defer func(start time.Time) { s.AccountUpdates += time.Since(start) }(time.Now())
@@ -577,7 +494,7 @@ func (s *StmStateDB) deleteStateObject(obj *stmStateObject) {
 }
 
 // FinaliseMVMemory finalises the latest states of multi-version state and storage
-func (s *StmStateDB) FinaliseMVMemory() {
+func (s *IcseStateDB) FinaliseMVMemory() {
 	s.stateObjects.Range(func(key, value interface{}) bool {
 		obj := value.(*stmStateObject)
 		obj.updateAccount()
@@ -589,7 +506,7 @@ func (s *StmStateDB) FinaliseMVMemory() {
 // Finalise finalises the state by removing the destructed objects and clears
 // the journal as well as the refunds. Finalise, however, will not push any updates
 // into the tries just yet. Only IntermediateRoot or Commit will do that.
-func (s *StmStateDB) Finalise(deleteEmptyObjects bool) {
+func (s *IcseStateDB) Finalise(deleteEmptyObjects bool) {
 	addressesToPrefetch := make([][]byte, 0)
 	//for addr := range s.journal.dirties {
 	// 如果 object 中 data的 len 超过1, 或者 data的长度为1时，txIndex 或 Incarnation 不为1
@@ -679,7 +596,7 @@ func (s *StmStateDB) Finalise(deleteEmptyObjects bool) {
 // IntermediateRoot computes the current root hash of the state trie.
 // It is called in between transactions to get the root hash that
 // goes into transaction receipts.
-func (s *StmStateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
+func (s *IcseStateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 	// Finalise all the dirty storage states and write them into the tries
 	s.Finalise(deleteEmptyObjects)
 
@@ -748,7 +665,7 @@ func (s *StmStateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 }
 
 // Commit writes the state to the underlying in-memory trie database.
-func (s *StmStateDB) Commit(deleteEmptyObjects bool) (common.Hash, error) {
+func (s *IcseStateDB) Commit(deleteEmptyObjects bool) (common.Hash, error) {
 	// Short circuit in case any database failure occurred earlier.
 	if s.dbErr != nil {
 		return common.Hash{}, fmt.Errorf("commit aborted due to earlier error: %v", s.dbErr)
@@ -878,7 +795,7 @@ func (s *StmStateDB) Commit(deleteEmptyObjects bool) (common.Hash, error) {
 }
 
 // convertAccountSet converts a provided account set from address keyed to hash keyed.
-func (s *StmStateDB) convertAccountSet(set map[common.Address]struct{}) map[common.Hash]struct{} {
+func (s *IcseStateDB) convertAccountSet(set map[common.Address]struct{}) map[common.Hash]struct{} {
 	ret := make(map[common.Hash]struct{})
 	for addr := range set {
 		//obj, exist := s.stateObjects[addr]
@@ -893,7 +810,7 @@ func (s *StmStateDB) convertAccountSet(set map[common.Address]struct{}) map[comm
 	return ret
 }
 
-//func (s *StmStateDB) Validation(valObjects map[common.Address]*stmTxStateObject, txIndex, txIncarnation int) {
+//func (s *IcseStateDB) Validation(valObjects map[common.Address]*stmTxStateObject, txIndex, txIncarnation int) {
 //	for addr, txObj := range valObjects {
 //		//obj, exist := s.stateObjects[addr]
 //		obj1, exist := s.stateObjects.Load(addr)
@@ -939,12 +856,12 @@ func (s *StmStateDB) convertAccountSet(set map[common.Address]struct{}) map[comm
 //}
 
 // Root converts a provided account set from address keyed to hash keyed.
-func (s *StmStateDB) Root() common.Hash {
+func (s *IcseStateDB) Root() common.Hash {
 	return s.originalRoot
 }
 
 // AddBalance adds amount to the account associated with addr.
-func (s *StmStateDB) AddBalance(addr common.Address, amount *big.Int) {
+func (s *IcseStateDB) AddBalance(addr common.Address, amount *big.Int) {
 	//obj, exist := s.stateObjects[addr]
 	obj1, exist := s.stateObjects.Load(addr)
 	if exist {
@@ -956,9 +873,9 @@ func (s *StmStateDB) AddBalance(addr common.Address, amount *big.Int) {
 
 // Copy creates a deep, independent copy of the state.
 // Snapshots of the copied state cannot be applied to the copy.
-func (s *StmStateDB) Copy() *StmStateDB {
+func (s *IcseStateDB) Copy() *IcseStateDB {
 	// Copy all the basic fields, initialize the memory ones
-	state := &StmStateDB{
+	state := &IcseStateDB{
 		db:                   s.db,
 		trie:                 s.db.CopyTrie(s.trie),
 		originalRoot:         s.originalRoot,

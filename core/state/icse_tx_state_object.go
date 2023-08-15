@@ -11,14 +11,15 @@ import (
 type SStorage map[common.Hash]*SSlot
 
 type stmTxStateObject struct {
-	txIndex       int
-	txIncarnation int
+	txIndex          int
+	txIncarnation    int
+	txStorageVersion int
 
 	address  common.Address
 	addrHash common.Hash // hash of ethereum address of the account
 	data     *SStateAccount
 	stmTx    *IcseTransaction
-	stateDB  *StmStateDB
+	stateDB  *IcseStateDB
 
 	dirtyStorage   Storage // Storage entries that have been modified in the current transaction execution 缓存当前合约账户中写⼊的变量地址与变量值
 	originStorage  Storage // Storage cache of original entries to dedup rewrites, reset for every transaction  缓存当前合约账户中被读取过的变量地址与变量值
@@ -32,18 +33,19 @@ func (s *stmTxStateObject) empty() bool {
 }
 
 // newStmTxStateObject, SStateAccount 记录了其数据所读取的版本
-func newStmTxStateObject(stmTx *IcseTransaction, stateDB *StmStateDB, address common.Address, data SStateAccount, txIndex, txIncarnation int) *stmTxStateObject {
+func newStmTxStateObject(stmTx *IcseTransaction, stateDB *IcseStateDB, address common.Address, data SStateAccount, txIndex, txIncarnation, txStorageVersion int) *stmTxStateObject {
 	return &stmTxStateObject{
-		txIndex:        txIndex,
-		txIncarnation:  txIncarnation,
-		stmTx:          stmTx,
-		stateDB:        stateDB,
-		address:        address,
-		addrHash:       crypto.Keccak256Hash(address[:]),
-		data:           newSStateAccount(data.StateAccount, data.Code, data.dirtyCode, data.suicided, data.deleted),
-		dirtyStorage:   make(Storage),
-		originStorage:  make(Storage),
-		modifiedMarker: false,
+		txIndex:          txIndex,
+		txIncarnation:    txIncarnation,
+		txStorageVersion: txStorageVersion,
+		stmTx:            stmTx,
+		stateDB:          stateDB,
+		address:          address,
+		addrHash:         crypto.Keccak256Hash(address[:]),
+		data:             newSStateAccount(data.StateAccount, data.Code, data.dirtyCode, data.suicided, data.deleted),
+		dirtyStorage:     make(Storage),
+		originStorage:    make(Storage),
+		modifiedMarker:   false,
 	}
 }
 
@@ -76,7 +78,7 @@ func (s *stmTxStateObject) GetState(key common.Hash) common.Hash {
 		return origin
 	}
 	// 否则需并发的从statedb中读取
-	readRes := s.stateDB.readStorageVersion(s.address, key, s.txIndex)
+	readRes := s.stateDB.readStorageVersion(s.address, key, s.txIndex, s.txStorageVersion)
 	if err := s.stmTx.process(readRes, s.address, &key); err != nil {
 		//log.Println(err)
 		if err.Error() == "notFound" {
@@ -96,7 +98,7 @@ func (s *stmTxStateObject) GetCommittedState(key common.Hash) common.Hash {
 		return origin
 	}
 	// 否则需并发的从statedb中读取
-	readRes := s.stateDB.readStorageVersion(s.address, key, s.txIndex)
+	readRes := s.stateDB.readStorageVersion(s.address, key, s.txIndex, s.txStorageVersion)
 	if err := s.stmTx.process(readRes, s.address, &key); err != nil {
 		//log.Println(err)
 		if err.Error() == "notFound" {

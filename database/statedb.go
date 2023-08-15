@@ -2,7 +2,11 @@ package database
 
 import (
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/log"
+	"icse/core/rawdb"
 	"icse/core/state"
+	"icse/core/state/snapshot"
+	"icse/core/types"
 	"icse/trie"
 )
 
@@ -13,4 +17,22 @@ func NewStateCache(db ethdb.Database) state.Database {
 		Journal:   config.Journal,
 		Preimages: config.Preimages,
 	})
+}
+
+func NewSnap(db ethdb.Database, stateCache state.Database, header *types.Header) *snapshot.Tree {
+	var recover bool
+
+	if layer := rawdb.ReadSnapshotRecoveryNumber(db); layer != nil && *layer > header.Number.Uint64() {
+		log.Warn("Enabling snapshot recovery", "chainhead", header.Number.Uint64(), "diskbase", *layer)
+		recover = true
+	}
+	snapconfig := snapshot.Config{
+		CacheSize:  256,
+		Recovery:   recover,
+		NoBuild:    true,
+		AsyncBuild: false,
+	}
+
+	snaps, _ := snapshot.New(snapconfig, db, stateCache.TrieDB(), header.Root)
+	return snaps
 }
