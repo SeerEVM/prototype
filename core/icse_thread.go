@@ -17,7 +17,7 @@ type ICSEThread struct {
 	// 多线程共用的公共存储db，保存多版本数据
 	publicStateDB *state.StateDB
 	// 交易专属db，保存交易读写数据
-	txStateDB *state.IcseTxStateDB
+	txStateDB *state.IcseTransaction
 	// 整个区块和区块中的交易
 	block *types.Block
 	// 区块上下文，一次性生成且不能改动

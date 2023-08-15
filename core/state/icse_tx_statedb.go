@@ -1,20 +1,39 @@
 package state
 
 import (
+	"errors"
 	"fmt"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
 	"icse/core/types"
+	"icse/setting"
 	"math/big"
 	"sort"
 )
 
-// IcseTxStateDB 临时存储单个交易执行过程中读取与更改的所有账户状态（每个新交易执⾏会创建⼀个实例，执⾏完释放）
-type IcseTxStateDB struct {
-	statedb *IcseStateDB
+var EstimateErr = fmt.Errorf("estimate", nil)
+
+// IcseTransaction is an Ethereum transaction.
+type IcseTransaction struct { // StmTransaction包含了一个stmTxStateDB，stmTxStateDB包含了一个StmStateDB，StmStateDB包含了一个官方提供的ethdb，且StmStateDB存储所有外部账户、合约账户的状态以及对应的状态
+	Tx          *types.Transaction
+	Index       int
+	Incarnation int
+	// 阻挡该交易执行的交易（依赖交易）
+	// BlockingTx    int
+	TxDB          *stmTxStateDB
+	readSet       []*ReadLoc
+	accessAddress *types.AccessAddressMap
+
+	// only error when reading estimate
+	dbErr error
+}
+
+// stmTxStateDB 临时存储单个交易执行过程中读取与更改的所有账户状态（每个新交易执⾏会创建⼀个实例，执⾏完释放）
+type stmTxStateDB struct {
+	statedb *StmStateDB
 	// This map holds 'live' objects, which will get modified while processing a state transition.
-	stateObjects         map[common.Address]*stateObject
+	stateObjects         map[common.Address]*stmTxStateObject
 	stateObjectsDirty    map[common.Address]struct{} // State objects modified in the current execution
 	stateObjectsDestruct map[common.Address]struct{} // State objects destructed in the block
 
@@ -36,28 +55,75 @@ type IcseTxStateDB struct {
 
 	// Journal of state modifications. This is the backbone of
 	// Snapshot and RevertToSnapshot.
-	journal        *journal
+	journal        *stmJournal
 	validRevisions []revision
 	nextRevisionId int
-
-	// 非官方库字段
-	accessAddress *types.AccessAddressMap
 }
 
-func (s *IcseTxStateDB) AddLog(log *types.Log) {
-	s.journal.append(addLogChange{txhash: s.thash})
+// WriteSet records the write operation including address and value after VM execution (Block-STM)
+type WriteSet struct {
+	Address         common.Address
+	Account         *SStateAccount
+	AccessedSlots   AccessedSlots
+	stateModified   bool
+	storageModified bool
+}
 
-	log.TxHash = s.thash
-	log.TxIndex = uint(s.txIndex)
-	log.Index = s.logSize
-	s.logs[s.thash] = append(s.logs[s.thash], log)
-	s.logSize++
+type WriteSets map[common.Address]*WriteSet
+type AccessedSlots map[common.Hash]common.Hash
+
+func NewWriteSet(address common.Address, data *SStateAccount, slots map[common.Hash]common.Hash, marker bool) *WriteSet {
+	storageModified := false
+	if len(slots) > 0 {
+		storageModified = true
+	}
+	return &WriteSet{
+		Address:         address,
+		Account:         data,
+		AccessedSlots:   slots,
+		stateModified:   marker,
+		storageModified: storageModified,
+	}
+}
+
+// NewStmTransaction creates a new state from a given trie.
+func NewStmTransaction(tx *types.Transaction, index, incarnation int, statedb *StmStateDB) *IcseTransaction {
+	stmTx := &IcseTransaction{
+		Tx:          tx,
+		Index:       index,
+		Incarnation: incarnation,
+		TxDB: &stmTxStateDB{
+			statedb:              statedb,
+			stateObjects:         make(map[common.Address]*stmTxStateObject),
+			stateObjectsDirty:    make(map[common.Address]struct{}),
+			stateObjectsDestruct: make(map[common.Address]struct{}),
+			logs:                 make(map[common.Hash][]*types.Log),
+			preimages:            make(map[common.Hash][]byte),
+			journal:              newStmJournal(),
+			accessList:           newAccessList(),
+			transientStorage:     newTransientStorage(),
+		},
+		readSet:       make([]*ReadLoc, 0, 100),
+		accessAddress: types.NewAccessAddressMap(),
+		dbErr:         nil,
+	}
+	return stmTx
+}
+
+func (s *IcseTransaction) AddLog(log *types.Log) {
+	s.TxDB.journal.append(stmAddLogChange{txhash: s.Tx.Hash()})
+
+	log.TxHash = s.Tx.Hash()
+	log.TxIndex = uint(s.Index)
+	log.Index = s.TxDB.logSize
+	s.TxDB.logs[s.Tx.Hash()] = append(s.TxDB.logs[s.Tx.Hash()], log)
+	s.TxDB.logSize++
 }
 
 // GetLogs returns the logs matching the specified transaction hash, and annotates
 // them with the given blockNumber and blockHash.
-func (s *IcseTxStateDB) GetLogs(hash common.Hash, blockNumber uint64, blockHash common.Hash) []*types.Log {
-	logs := s.logs[hash]
+func (s *IcseTransaction) GetLogs(hash common.Hash, blockNumber uint64, blockHash common.Hash) []*types.Log {
+	logs := s.TxDB.logs[hash]
 	for _, l := range logs {
 		l.BlockNumber = blockNumber
 		l.BlockHash = blockHash
@@ -65,119 +131,119 @@ func (s *IcseTxStateDB) GetLogs(hash common.Hash, blockNumber uint64, blockHash 
 	return logs
 }
 
-func (s *IcseTxStateDB) Logs() []*types.Log {
+func (s *IcseTransaction) Logs() []*types.Log {
 	var logs []*types.Log
-	for _, lgs := range s.logs {
+	for _, lgs := range s.TxDB.logs {
 		logs = append(logs, lgs...)
 	}
 	return logs
 }
 
 // AddPreimage records a SHA3 preimage seen by the VM.
-func (s *IcseTxStateDB) AddPreimage(hash common.Hash, preimage []byte) {
-	if _, ok := s.preimages[hash]; !ok {
-		s.journal.append(addPreimageChange{hash: hash})
+func (s *IcseTransaction) AddPreimage(hash common.Hash, preimage []byte) {
+	if _, ok := s.TxDB.preimages[hash]; !ok {
+		s.TxDB.journal.append(stmAddPreimageChange{hash: hash})
 		pi := make([]byte, len(preimage))
 		copy(pi, preimage)
-		s.preimages[hash] = pi
+		s.TxDB.preimages[hash] = pi
 	}
 }
 
 // Preimages returns a list of SHA3 preimages that have been submitted.
-func (s *IcseTxStateDB) Preimages() map[common.Hash][]byte {
-	return s.preimages
+func (s *IcseTransaction) Preimages() map[common.Hash][]byte {
+	return s.TxDB.preimages
 }
 
 // AddRefund adds gas to the refund counter
-func (s *IcseTxStateDB) AddRefund(gas uint64) {
-	s.journal.append(refundChange{prev: s.refund})
-	s.refund += gas
+func (s *IcseTransaction) AddRefund(gas uint64) {
+	s.TxDB.journal.append(stmRefundChange{prev: s.TxDB.refund})
+	s.TxDB.refund += gas
 }
 
 // SubRefund removes gas from the refund counter.
 // This method will panic if the refund counter goes below zero
-func (s *IcseTxStateDB) SubRefund(gas uint64) {
-	s.journal.append(refundChange{prev: s.refund})
-	if gas > s.refund {
-		panic(fmt.Sprintf("Refund counter below zero (gas: %d > refund: %d)", gas, s.refund))
+func (s *IcseTransaction) SubRefund(gas uint64) {
+	s.TxDB.journal.append(stmRefundChange{prev: s.TxDB.refund})
+	if gas > s.TxDB.refund {
+		panic(fmt.Sprintf("Refund counter below zero (gas: %d > refund: %d)", gas, s.TxDB.refund))
 	}
-	s.refund -= gas
+	s.TxDB.refund -= gas
 }
 
 // Exist reports whether the given account address exists in the state.
 // Notably this also returns true for suicided accounts.
-func (s *IcseTxStateDB) Exist(addr common.Address) bool {
+func (s *IcseTransaction) Exist(addr common.Address) bool {
 	addAccessAddr(s.accessAddress, addr, true)
 	return s.getStateObject(addr) != nil
 }
 
 // Empty returns whether the state object is either non-existent
 // or empty according to the EIP161 specification (balance = nonce = code = 0)
-func (s *IcseTxStateDB) Empty(addr common.Address) bool {
+func (s *IcseTransaction) Empty(addr common.Address) bool {
 	addAccessAddr(s.accessAddress, addr, true)
 	so := s.getStateObject(addr)
 	return so == nil || so.empty()
 }
 
 // GetBalance retrieves the balance from the given address or 0 if object not found
-func (s *IcseTxStateDB) GetBalance(addr common.Address) *big.Int {
+func (s *IcseTransaction) GetBalance(addr common.Address) *big.Int {
 	addAccessAddr(s.accessAddress, addr, true)
-	so := s.getStateObject(addr)
-	if so != nil {
-		return so.Balance()
+	stmTxStateObject := s.getStateObject(addr)
+	if stmTxStateObject != nil {
+		return stmTxStateObject.Balance()
 	}
 	return common.Big0
 }
 
-func (s *IcseTxStateDB) GetNonce(addr common.Address) uint64 {
+func (s *IcseTransaction) GetNonce(addr common.Address) uint64 {
 	addAccessAddr(s.accessAddress, addr, true)
-	so := s.getStateObject(addr)
-	if so != nil {
-		return so.Nonce()
+	stmTxStateObject := s.getStateObject(addr)
+	if stmTxStateObject != nil {
+		return stmTxStateObject.Nonce()
 	}
 	return 0
 }
 
 // TxIndex returns the current transaction index set by Prepare.
-func (s *IcseTxStateDB) TxIndex() int {
-	return s.txIndex
+func (s *IcseTransaction) TxIndex() int {
+	return s.Index
 }
 
-func (s *IcseTxStateDB) GetCode(addr common.Address) []byte {
+func (s *IcseTransaction) GetCode(addr common.Address) []byte {
 	addAccessAddr(s.accessAddress, addr, true)
-	so := s.getStateObject(addr)
-	if so != nil {
-		return so.Code()
+	stmTxStateObject := s.getStateObject(addr)
+	if stmTxStateObject != nil {
+		return stmTxStateObject.Code()
 	}
 	return nil
 }
 
-func (s *IcseTxStateDB) GetCodeSize(addr common.Address) int {
+func (s *IcseTransaction) GetCodeSize(addr common.Address) int {
 	addAccessAddr(s.accessAddress, addr, true)
-	so := s.getStateObject(addr)
-	if so != nil {
-		return so.CodeSize()
+	stmTxStateObject := s.getStateObject(addr)
+	if stmTxStateObject != nil {
+		return stmTxStateObject.CodeSize()
 	}
 	return 0
 }
 
-func (s *IcseTxStateDB) GetCodeHash(addr common.Address) common.Hash {
+func (s *IcseTransaction) GetCodeHash(addr common.Address) common.Hash {
 	addAccessAddr(s.accessAddress, addr, true)
-	so := s.getStateObject(addr)
-	if so != nil {
-		return common.BytesToHash(so.CodeHash())
+	stmTxStateObject := s.getStateObject(addr)
+	if stmTxStateObject != nil {
+		return common.BytesToHash(stmTxStateObject.CodeHash())
 	}
 	return common.Hash{}
 }
 
 // GetState retrieves a value from the given account's storage trie.
-func (s *IcseTxStateDB) GetState(addr common.Address, hash common.Hash) common.Hash {
+func (s *IcseTransaction) GetState(addr common.Address, hash common.Hash) common.Hash {
 	addAccessSlot(s.accessAddress, addr, hash, true, s.Index)
 	var stateHash = common.Hash{}
-	so := s.getStateObject(addr)
-	if so != nil {
-		//return so.GetState(hash)
-		stateHash = so.GetState(hash)
+	stmTxStateObject := s.getStateObject(addr)
+	if stmTxStateObject != nil {
+		//return stmTxStateObject.GetState(hash)
+		stateHash = stmTxStateObject.GetState(hash)
 	}
 	//if s.Index == 11 {
 	//	fmt.Println(addr, hash, stateHash)
@@ -186,21 +252,21 @@ func (s *IcseTxStateDB) GetState(addr common.Address, hash common.Hash) common.H
 }
 
 // GetCommittedState retrieves a value from the given account's committed storage trie.
-func (s *IcseTxStateDB) GetCommittedState(addr common.Address, hash common.Hash) common.Hash {
+func (s *IcseTransaction) GetCommittedState(addr common.Address, hash common.Hash) common.Hash {
 	addAccessSlot(s.accessAddress, addr, hash, true, s.Index)
-	so := s.getStateObject(addr)
-	if so != nil {
+	stmTxStateObject := s.getStateObject(addr)
+	if stmTxStateObject != nil {
 		// 这里可能会有点问题
-		return so.GetCommittedState(hash)
+		return stmTxStateObject.GetCommittedState(hash)
 	}
 	return common.Hash{}
 }
 
-func (s *IcseTxStateDB) HasSuicided(addr common.Address) bool {
+func (s *IcseTransaction) HasSuicided(addr common.Address) bool {
 	addAccessAddr(s.accessAddress, addr, true)
-	so := s.getStateObject(addr)
-	if so != nil {
-		return so.data.suicided
+	stmTxStateObject := s.getStateObject(addr)
+	if stmTxStateObject != nil {
+		return stmTxStateObject.data.suicided
 	}
 	return false
 }
@@ -210,65 +276,65 @@ func (s *IcseTxStateDB) HasSuicided(addr common.Address) bool {
  */
 
 // AddBalance adds amount to the account associated with addr.
-func (s *IcseTxStateDB) AddBalance(addr common.Address, amount *big.Int) {
+func (s *IcseTransaction) AddBalance(addr common.Address, amount *big.Int) {
 	addAccessAddr(s.accessAddress, addr, false)
-	so := s.GetOrNewStateObject(addr)
-	if so != nil {
-		so.AddBalance(amount)
+	stmTxStateObject := s.GetOrNewStateObject(addr)
+	if stmTxStateObject != nil {
+		stmTxStateObject.AddBalance(amount)
 	}
 }
 
 // SubBalance subtracts amount from the account associated with addr.
-func (s *IcseTxStateDB) SubBalance(addr common.Address, amount *big.Int) {
+func (s *IcseTransaction) SubBalance(addr common.Address, amount *big.Int) {
 	addAccessAddr(s.accessAddress, addr, false)
-	so := s.GetOrNewStateObject(addr)
-	if so != nil {
-		so.SubBalance(amount)
+	stmTxStateObject := s.GetOrNewStateObject(addr)
+	if stmTxStateObject != nil {
+		stmTxStateObject.SubBalance(amount)
 	}
 }
 
-func (s *IcseTxStateDB) SetBalance(addr common.Address, amount *big.Int) {
-	so := s.GetOrNewStateObject(addr)
-	if so != nil {
-		so.SetBalance(amount)
+func (s *IcseTransaction) SetBalance(addr common.Address, amount *big.Int) {
+	stmTxStateObject := s.GetOrNewStateObject(addr)
+	if stmTxStateObject != nil {
+		stmTxStateObject.SetBalance(amount)
 	}
 }
 
-func (s *IcseTxStateDB) SetNonce(addr common.Address, nonce uint64) {
+func (s *IcseTransaction) SetNonce(addr common.Address, nonce uint64) {
 	addAccessAddr(s.accessAddress, addr, false) // 将addr（这个addr来源于msg.from）添加进s的AccessAddressMap
-	so := s.GetOrNewStateObject(addr)
-	if so != nil {
-		so.SetNonce(nonce)
+	stmTxStateObject := s.GetOrNewStateObject(addr)
+	if stmTxStateObject != nil {
+		stmTxStateObject.SetNonce(nonce)
 	}
 }
 
-func (s *IcseTxStateDB) SetCode(addr common.Address, code []byte) {
+func (s *IcseTransaction) SetCode(addr common.Address, code []byte) {
 	addAccessAddr(s.accessAddress, addr, false)
-	so := s.GetOrNewStateObject(addr)
-	if so != nil {
-		so.SetCode(crypto.Keccak256Hash(code), code)
+	stmTxStateObject := s.GetOrNewStateObject(addr)
+	if stmTxStateObject != nil {
+		stmTxStateObject.SetCode(crypto.Keccak256Hash(code), code)
 	}
 }
 
-func (s *IcseTxStateDB) SetState(addr common.Address, key, value common.Hash) {
+func (s *IcseTransaction) SetState(addr common.Address, key, value common.Hash) {
 	addAccessSlot(s.accessAddress, addr, key, false, s.Index)
-	so := s.GetOrNewStateObject(addr)
-	if so != nil {
-		so.SetState(key, value)
+	stmTxStateObject := s.GetOrNewStateObject(addr)
+	if stmTxStateObject != nil {
+		stmTxStateObject.SetState(key, value)
 	}
 }
 
 // SetStorage replaces the entire storage for the specified account with given
 // storage. This function should only be used for debugging.
-func (s *IcseTxStateDB) SetStorage(addr common.Address, storage map[common.Hash]common.Hash) {
+func (s *IcseTransaction) SetStorage(addr common.Address, storage map[common.Hash]common.Hash) {
 	// SetStorage needs to wipe existing storage. We achieve this by pretending
 	// that the account self-destructed earlier in this block, by flagging
 	// it in stateObjectsDestruct. The effect of doing so is that storage lookups
 	// will not hit disk, since it is assumed that the disk-data is belonging
 	// to a previous incarnation of the object.
-	so := s.GetOrNewStateObject(addr)
+	stmTxStateObject := s.GetOrNewStateObject(addr)
 	for k, v := range storage {
-		so.SetState(k, v)
+		stmTxStateObject.SetState(k, v)
 	}
 }
 
@@ -277,19 +343,19 @@ func (s *IcseTxStateDB) SetStorage(addr common.Address, storage map[common.Hash]
 //
 // The account's state object is still available until the state is committed,
 // getStateObject will return a non-nil account after Suicide.
-func (s *IcseTxStateDB) Suicide(addr common.Address) bool {
+func (s *IcseTransaction) Suicide(addr common.Address) bool {
 	addAccessAddr(s.accessAddress, addr, false)
-	so := s.getStateObject(addr)
-	if so == nil {
+	stmTxStateObject := s.getStateObject(addr)
+	if stmTxStateObject == nil {
 		return false
 	}
-	s.journal.append(suicideChange{
+	s.TxDB.journal.append(stmSuicideChange{
 		account:     &addr,
-		prev:        so.data.suicided,
-		prevbalance: new(big.Int).Set(so.Balance()),
+		prev:        stmTxStateObject.data.suicided,
+		prevbalance: new(big.Int).Set(stmTxStateObject.Balance()),
 	})
-	so.markSuicided()
-	so.data.StateAccount.Balance = new(big.Int)
+	stmTxStateObject.markSuicided()
+	stmTxStateObject.data.StateAccount.Balance = new(big.Int)
 
 	return true
 }
@@ -297,7 +363,7 @@ func (s *IcseTxStateDB) Suicide(addr common.Address) bool {
 // SetTransientState sets transient storage for a given account. It
 // adds the change to the journal so that it can be rolled back
 // to its previous value if there is a revert.
-func (s *IcseTxStateDB) SetTransientState(addr common.Address, key, value common.Hash) {
+func (s *IcseTransaction) SetTransientState(addr common.Address, key, value common.Hash) {
 	addAccessAddr(s.accessAddress, addr, true)
 	prev := s.GetTransientState(addr, key)
 	if prev == value {
@@ -313,7 +379,7 @@ func (s *IcseTxStateDB) SetTransientState(addr common.Address, key, value common
 
 // setTransientState is a lower level setter for transient storage. It
 // is called during a revert to prevent modifications to the journal.
-func (s *IcseTxStateDB) setTransientState(addr common.Address, key, value common.Hash) {
+func (s *IcseTransaction) setTransientState(addr common.Address, key, value common.Hash) {
 	s.TxDB.transientStorage.Set(addr, key, value)
 }
 func (sts *stmTxStateDB) setTransientState(addr common.Address, key, value common.Hash) {
@@ -321,7 +387,7 @@ func (sts *stmTxStateDB) setTransientState(addr common.Address, key, value commo
 }
 
 // GetTransientState gets transient storage for a given account.
-func (s *IcseTxStateDB) GetTransientState(addr common.Address, key common.Hash) common.Hash {
+func (s *IcseTransaction) GetTransientState(addr common.Address, key common.Hash) common.Hash {
 	addAccessAddr(s.accessAddress, addr, true)
 	return s.TxDB.transientStorage.Get(addr, key)
 }
@@ -331,7 +397,7 @@ func (s *IcseTxStateDB) GetTransientState(addr common.Address, key common.Hash) 
 //
 
 // 为了回滚
-func (sts *stmTxStateDB) getStateObject(addr common.Address) *so {
+func (sts *stmTxStateDB) getStateObject(addr common.Address) *stmTxStateObject {
 	obj := sts.stateObjects[addr]
 	return obj
 }
@@ -339,7 +405,7 @@ func (sts *stmTxStateDB) getStateObject(addr common.Address) *so {
 // getStateObject retrieves a state object given by the address, returning nil if
 // the object is not found or was deleted in this execution context. If you need
 // to differentiate between non-existent/just-deleted, use getDeletedStateObject.
-func (s *IcseTxStateDB) getStateObject(addr common.Address) *so {
+func (s *IcseTransaction) getStateObject(addr common.Address) *stmTxStateObject {
 	if obj := s.getDeletedStateObject(addr); obj != nil && !obj.data.deleted {
 		return obj
 	}
@@ -351,7 +417,7 @@ func (s *IcseTxStateDB) getStateObject(addr common.Address) *so {
 // flag set. This is needed by the state journal to revert to the correct s-
 // destructed object instead of wiping all knowledge about the state object.
 // 读一个obj，如果tx_statedb中存在，直接返回；否则去statedb寻找，找到的结果同时记录在tx_statedb中
-func (s *IcseTxStateDB) getDeletedStateObject(addr common.Address) *so {
+func (s *IcseTransaction) getDeletedStateObject(addr common.Address) *stmTxStateObject {
 	// Prefer live objects if any is available
 	if obj := s.TxDB.stateObjects[addr]; obj != nil { // 先搜寻单版本的tx_statedb中是否记录有该obj
 		return obj
@@ -366,36 +432,36 @@ func (s *IcseTxStateDB) getDeletedStateObject(addr common.Address) *so {
 	// Here, we assume that the aborted tx is executed normally
 	// Insert into the live set
 	// 因为这里不负责处理tx abort事宜，abort消息包含在readRes里面在运行s.process函数时已经被传递给s.dbError
-	obj := newso(s, s.TxDB.statedb, addr, *readRes.DirtyState.account, s.Index, s.Incarnation)
+	obj := newStmTxStateObject(s, s.TxDB.statedb, addr, *readRes.DirtyState.account, s.Index, s.Incarnation)
 	s.setStateObject(obj) // 从statedb中获取的obj被加入tx_statedb
 	return obj
 }
 
-func (s *IcseTxStateDB) setStateObject(object *so) {
+func (s *IcseTransaction) setStateObject(object *stmTxStateObject) {
 	s.TxDB.stateObjects[object.Address()] = object
 }
 
 // 为了回滚
-func (sts *stmTxStateDB) setStateObject(object *so) {
+func (sts *stmTxStateDB) setStateObject(object *stmTxStateObject) {
 	sts.stateObjects[object.Address()] = object
 }
 
 // GetOrNewStateObject retrieves a state object or create a new state object if nil.
-func (s *IcseTxStateDB) GetOrNewStateObject(addr common.Address) *so {
-	so := s.getStateObject(addr)
-	if so == nil {
-		so = s.createObjectWithoutRead(addr)
+func (s *IcseTransaction) GetOrNewStateObject(addr common.Address) *stmTxStateObject {
+	stmTxStateObject := s.getStateObject(addr)
+	if stmTxStateObject == nil {
+		stmTxStateObject = s.createObjectWithoutRead(addr)
 	}
-	return so
+	return stmTxStateObject
 }
 
 // createObjectWithoutRead creates a new state object without checking if the account exists.
 // It is used after when the state object cannot be obtained
-func (s *IcseTxStateDB) createObjectWithoutRead(addr common.Address) *so {
+func (s *IcseTransaction) createObjectWithoutRead(addr common.Address) *stmTxStateObject {
 	stateAccount := SStateAccount{
 		StateAccount: types.NewStateAccount(0, new(big.Int).SetInt64(0), types.EmptyRootHash, types.EmptyCodeHash.Bytes()),
 	}
-	newObj := newso(s, s.TxDB.statedb, addr, stateAccount, s.Index, s.Incarnation)
+	newObj := newStmTxStateObject(s, s.TxDB.statedb, addr, stateAccount, s.Index, s.Incarnation)
 	s.TxDB.journal.append(stmCreateObjectChange{account: &addr})
 	s.setStateObject(newObj)
 	return newObj
@@ -403,7 +469,7 @@ func (s *IcseTxStateDB) createObjectWithoutRead(addr common.Address) *so {
 
 // createObject creates a new state object. If there is an existing account with
 // the given address, it is overwritten and returned as the second return value.
-func (s *IcseTxStateDB) createObject(addr common.Address) (newObj, prev *so) {
+func (s *IcseTransaction) createObject(addr common.Address) (newObj, prev *stmTxStateObject) {
 	prev = s.getDeletedStateObject(addr) // Note, prev might have been deleted, we need that!
 	if s.dbErr != nil {
 		s.dbErr = nil
@@ -419,7 +485,7 @@ func (s *IcseTxStateDB) createObject(addr common.Address) (newObj, prev *so) {
 			s.TxDB.stateObjectsDestruct[prev.address] = struct{}{}
 		}
 	}
-	newObj = newso(s, s.TxDB.statedb, addr, stateAccount, s.Index, s.Incarnation)
+	newObj = newStmTxStateObject(s, s.TxDB.statedb, addr, stateAccount, s.Index, s.Incarnation)
 	if prev == nil {
 		s.TxDB.journal.append(stmCreateObjectChange{account: &addr})
 	} else {
@@ -442,7 +508,7 @@ func (s *IcseTxStateDB) createObject(addr common.Address) (newObj, prev *so) {
 //  2. tx_create(sha(account ++ nonce)) (note that this gets the address of 1)
 //
 // Carrying over the balance ensures that Ether doesn't disappear.
-func (s *IcseTxStateDB) CreateAccount(addr common.Address) {
+func (s *IcseTransaction) CreateAccount(addr common.Address) {
 	addAccessAddr(s.accessAddress, addr, false)
 	newObj, prev := s.createObject(addr)
 	if prev != nil {
@@ -451,7 +517,7 @@ func (s *IcseTxStateDB) CreateAccount(addr common.Address) {
 }
 
 // Snapshot returns an identifier for the current revision of the state.
-func (s *IcseTxStateDB) Snapshot() int {
+func (s *IcseTransaction) Snapshot() int {
 	id := s.TxDB.nextRevisionId
 	s.TxDB.nextRevisionId++
 	s.TxDB.validRevisions = append(s.TxDB.validRevisions, revision{id, s.TxDB.journal.length()})
@@ -459,7 +525,7 @@ func (s *IcseTxStateDB) Snapshot() int {
 }
 
 // RevertToSnapshot reverts all state changes made since the given revision.
-func (s *IcseTxStateDB) RevertToSnapshot(revid int) {
+func (s *IcseTransaction) RevertToSnapshot(revid int) {
 	// Find the snapshot in the stack of valid snapshots.
 	idx := sort.Search(len(s.TxDB.validRevisions), func(i int) bool {
 		return s.TxDB.validRevisions[i].id >= revid
@@ -475,14 +541,14 @@ func (s *IcseTxStateDB) RevertToSnapshot(revid int) {
 }
 
 // GetRefund returns the current value of the refund counter.
-func (s *IcseTxStateDB) GetRefund() uint64 {
+func (s *IcseTransaction) GetRefund() uint64 {
 	return s.TxDB.refund
 }
 
 // SetTxContext sets the current transaction hash and index which are
 // used when the EVM emits new state logs. It should be invoked before
 // transaction execution.
-func (s *IcseTxStateDB) SetTxContext(thash common.Hash, ti int) {
+func (s *IcseTransaction) SetTxContext(thash common.Hash, ti int) {
 	s.TxDB.thash = thash
 	s.TxDB.txIndex = ti
 }
@@ -500,7 +566,7 @@ func (s *IcseTxStateDB) SetTxContext(thash common.Hash, ti int) {
 // - Reset access list (Berlin)
 // - Add coinbase to access list (EIP-3651)
 // - Reset transient storage (EIP-1153)
-func (s *IcseTxStateDB) Prepare(rules params.Rules, sender, coinbase common.Address, dst *common.Address, precompiles []common.Address, list types.AccessList) {
+func (s *IcseTransaction) Prepare(rules params.Rules, sender, coinbase common.Address, dst *common.Address, precompiles []common.Address, list types.AccessList) {
 	if rules.IsBerlin {
 		// Clear out any leftover from previous executions
 		al := newAccessList()
@@ -529,14 +595,14 @@ func (s *IcseTxStateDB) Prepare(rules params.Rules, sender, coinbase common.Addr
 }
 
 // AddAddressToAccessList adds the given address to the access list
-func (s *IcseTxStateDB) AddAddressToAccessList(addr common.Address) {
+func (s *IcseTransaction) AddAddressToAccessList(addr common.Address) {
 	if s.TxDB.accessList.AddAddress(addr) {
 		s.TxDB.journal.append(stmAccessListAddAccountChange{&addr})
 	}
 }
 
 // AddSlotToAccessList adds the given (address, slot)-tuple to the access list
-func (s *IcseTxStateDB) AddSlotToAccessList(addr common.Address, slot common.Hash) {
+func (s *IcseTransaction) AddSlotToAccessList(addr common.Address, slot common.Hash) {
 	addrMod, slotMod := s.TxDB.accessList.AddSlot(addr, slot)
 	if addrMod {
 		// In practice, this should not happen, since there is no way to enter the
@@ -554,21 +620,21 @@ func (s *IcseTxStateDB) AddSlotToAccessList(addr common.Address, slot common.Has
 }
 
 // AddressInAccessList returns true if the given address is in the access list.
-func (s *IcseTxStateDB) AddressInAccessList(addr common.Address) bool {
+func (s *IcseTransaction) AddressInAccessList(addr common.Address) bool {
 	return s.TxDB.accessList.ContainsAddress(addr)
 }
 
 // SlotInAccessList returns true if the given (address, slot)-tuple is in the access list.
-func (s *IcseTxStateDB) SlotInAccessList(addr common.Address, slot common.Hash) (addressPresent bool, slotPresent bool) {
+func (s *IcseTransaction) SlotInAccessList(addr common.Address, slot common.Hash) (addressPresent bool, slotPresent bool) {
 	return s.TxDB.accessList.Contains(addr, slot)
 }
 
-func (s *IcseTxStateDB) AccessAddress() *types.AccessAddressMap {
+func (s *IcseTransaction) AccessAddress() *types.AccessAddressMap {
 	return s.accessAddress
 }
 
 // GetDBError if estimate,  abort
-func (s *IcseTxStateDB) GetDBError() error {
+func (s *IcseTransaction) GetDBError() error {
 	if setting.Estimate {
 		return s.dbErr
 	} else {
@@ -576,8 +642,8 @@ func (s *IcseTxStateDB) GetDBError() error {
 	}
 }
 
-func (s *IcseTxStateDB) Validation(deleteEmptyObjects bool) {
-	valObjects := make(map[common.Address]*so)
+func (s *IcseTransaction) Validation(deleteEmptyObjects bool) {
+	valObjects := make(map[common.Address]*stmTxStateObject)
 	for addr := range s.TxDB.journal.dirties {
 		obj, exist := s.TxDB.stateObjects[addr]
 		if !exist {
@@ -598,10 +664,7 @@ func (s *IcseTxStateDB) Validation(deleteEmptyObjects bool) {
 }
 
 // process processes the read result and adds the corresponding read operations to the read set
-func (s *IcseTxStateDB) process(res *ReadResult, addr common.Address, hash *common.Hash) error {
-	if res.Status == READ_ERROR { // 读到estimate了
-		s.dbErr = EstimateErr
-	}
+func (s *IcseTransaction) process(res *ReadResult, addr common.Address, hash *common.Hash) error {
 	if hash == nil {
 		if (res.Status == NOT_FOUND || res.Status == READ_OK) && res.DirtyState.account.StateAccount != nil {
 			s.addRead(addr, nil, res.Version)
@@ -632,14 +695,14 @@ func (s *IcseTxStateDB) process(res *ReadResult, addr common.Address, hash *comm
 }
 
 // addRead adds read address and slots to the read set
-func (s *IcseTxStateDB) addRead(addr common.Address, slot *common.Hash, ver *TxInfoMini) {
+func (s *IcseTransaction) addRead(addr common.Address, slot *common.Hash, ver *TxInfoMini) {
 	loc := newLocation(addr, slot)
 	rLoc := &ReadLoc{Location: loc, Version: ver}
 	s.readSet = append(s.readSet, rLoc)
 }
 
 // OutputRWSet obtains read and write sets of a tx after the execution in VM
-func (s *IcseTxStateDB) OutputRWSet() (int, []*ReadLoc, WriteSets) {
+func (s *IcseTransaction) OutputRWSet() (int, []*ReadLoc, WriteSets) {
 	// demonstrate that this tx is aborted
 	if s.BlockingTx > -1 {
 		return s.BlockingTx, nil, nil
