@@ -11,6 +11,7 @@ type TxsItem struct {
 	Incarnation    int
 }
 
+// TxsHeap 一个并发安全的最小堆，堆中元素为 TxsItem，StorageVersion越小排在越前面，StorageVersion相等时Index越小排在越前面
 type TxsHeap struct {
 	txsHeap *txsHeap
 	mutex   sync.Mutex

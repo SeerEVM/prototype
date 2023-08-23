@@ -9,6 +9,7 @@ import (
 	"icse/core/types"
 	"math/big"
 	"sort"
+	"strings"
 )
 
 // IcseTransaction is an Ethereum transaction.
@@ -70,6 +71,14 @@ type WriteSet struct {
 
 type WriteSets map[common.Address]*WriteSet
 type AccessedSlots map[common.Hash]common.Hash
+
+func (ws WriteSets) String() string {
+	var allAddress []string
+	for k, _ := range ws {
+		allAddress = append(allAddress, k.String())
+	}
+	return "{" + strings.Join(allAddress, ", ") + "}"
+}
 
 func NewWriteSet(address common.Address, data *SStateAccount, slots map[common.Hash]common.Hash, marker bool) *WriteSet {
 	storageModified := false
@@ -422,7 +431,7 @@ func (s *IcseTransaction) getDeletedStateObject(addr common.Address) *stmTxState
 		return obj
 	}
 	readRes := s.TxDB.statedb.readStateVersion(addr, s.StorageVersion) // 非官方statedb函数，再搜寻多线程共享的statedb
-	if err := s.process(readRes, addr, nil); err != nil {              // 写集在这里记录
+	if err := s.process(readRes, addr, nil); err != nil {              // 处理读取结果，包括状态信息，并调用addRead方法把写集记录到tx_statedb.readSet
 		//log.Println(err)
 		//notFound else readOK
 		if err.Error() == "notFound" {

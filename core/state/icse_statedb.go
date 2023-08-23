@@ -90,16 +90,14 @@ type ReadLoc struct {
 type ReadResult struct {
 	Status       int
 	Version      *TxInfoMini
-	BlockingTx   int
 	DirtyState   *stateOperation // dirty应该是脏读脏写的意思，该事务做出的但是未提交的内容
 	DirtyStorage *storageOperation
 }
 
 func newReadResult() *ReadResult {
 	return &ReadResult{
-		Status:     -1,
-		Version:    &TxInfoMini{Index: -1, Incarnation: -1},
-		BlockingTx: -1,
+		Status:  -1,
+		Version: &TxInfoMini{Index: -1, Incarnation: -1},
 		//DirtyState:   new(stateOperation),
 		//DirtyStorage: new(storageOperation),
 	}
@@ -114,6 +112,10 @@ type Location struct {
 
 func (loc *Location) Address() (common.Address, common.Hash) {
 	return loc.stateAddress, loc.storageSlot
+}
+
+func (loc *Location) String() string {
+	return fmt.Sprintf("{stateAddress: %s, storageSlot: %s, storageMarker: %t}", loc.stateAddress, loc.storageSlot, loc.storageMarker)
 }
 
 func newLocation(stateAddress common.Address, storageSlot *common.Hash) *Location {
@@ -297,7 +299,7 @@ func (s *IcseStateDB) readStorageVersion(addr common.Address, hash common.Hash, 
 		}
 
 		for id := range smap {
-			if id < storageVersion {
+			if id <= storageVersion {
 				txIndexes = append(txIndexes, id)
 			}
 		}
@@ -315,23 +317,58 @@ func (s *IcseStateDB) readStorageVersion(addr common.Address, hash common.Hash, 
 }
 
 // ValidateReadSet validates the fetched read-set during last execution
-func (s *IcseStateDB) ValidateReadSet(index int) bool {
+func (s *IcseStateDB) ValidateReadSet(index int, incarnation int, PrintDetails bool) bool {
 	v, _ := s.lastReads.Load(index)
 	res := v.([]*ReadLoc)
 	for _, read := range res {
 		var curRes *ReadResult
 		if !read.Location.storageMarker {
-			curRes = s.readStateVersion(read.Location.stateAddress, index)
+			curRes = s.readStateVersion(read.Location.stateAddress, index-1)
 		} else {
-			curRes = s.readStorageVersion(read.Location.stateAddress, read.Location.storageSlot, index)
+			curRes = s.readStorageVersion(read.Location.stateAddress, read.Location.storageSlot, index-1)
 		}
 		if curRes.Status == NOT_FOUND {
+			// fmt.Printf("tx %+v的读操作\n%+v现在的状态是NOT_FOUND\n", read.Version, read.Location)
 			return false
 		} else if curRes.Status == READ_OK && !curRes.Version.Compare(read.Version) {
+			if PrintDetails {
+				fmt.Printf("tx {Index: %d Incarnation: %d}的读操作是读取版本%+v的位置{stateAddress: %s, storageSlot: %v, storageMarker: %v}已经被版本%+v所写\n", index, incarnation, read.Version, read.Location.stateAddress, read.Location.storageSlot, read.Location.storageMarker, curRes.Version)
+			}
 			return false
 		}
 	}
 	return true
+}
+
+// GetDependency 找到给定交易的依赖交易中序号最大的一个，-1代表不依赖任何之前的交易
+func (s *IcseStateDB) GetDependency(index int) int {
+	maxDependencyIndex := -1
+
+	v, _ := s.lastReads.Load(index)
+	res := v.([]*ReadLoc)
+	//var res []*ReadLoc
+	//if v == nil {
+	//	return -1
+	//} else {
+	//	res = v.([]*ReadLoc)
+	//}
+
+	for _, read := range res {
+		var curRes *ReadResult
+		if !read.Location.storageMarker {
+			curRes = s.readStateVersion(read.Location.stateAddress, index-1)
+		} else {
+			curRes = s.readStorageVersion(read.Location.stateAddress, read.Location.storageSlot, index-1)
+		}
+		if curRes.Status == NOT_FOUND {
+			panic("出现NOT_FOUND")
+		} else if curRes.Status == READ_OK && !curRes.Version.Compare(read.Version) {
+			if curRes.Version.Index > maxDependencyIndex {
+				maxDependencyIndex = curRes.Version.Index
+			}
+		}
+	}
+	return maxDependencyIndex
 }
 
 // applyWrites updates state or storage version  according to tx's write sets

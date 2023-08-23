@@ -9,12 +9,16 @@ import (
 	"icse/core/state/snapshot"
 	"icse/core/types"
 	"icse/database"
-	minHeap "icse/min_heap"
+	"icse/dependencyGraph"
+	"icse/minHeap"
 	"math/big"
 )
 
+// PrintDetails 是否打印详细信息
+const PrintDetails = false
+
 func main() {
-	err := TestICSE(6)
+	err := TestICSE(4)
 	if err != nil {
 		panic(err)
 	}
@@ -22,7 +26,7 @@ func main() {
 
 func TestICSE(threads int) error {
 	// 数据库封装程度由低到高，ethdb.Database是接口类型，rawdb是一个leveldb或pebble加上freezer
-	// ethdb.Database是geth的数据库抽象，rawdb包中给出了一个使用leveldb构造的一个接口具体实现实现，是disk db
+	// ethdb.Database是geth的数据库抽象，rawdb包中给出了一个使用leveldb构造的一个接口具体实现实现，属于disk db
 	rawConfig := database.DefaultRawConfig()
 	rawConfig.Path = "./copychain"
 	rawConfig.Ancient = "./copychain/ancient"
@@ -37,7 +41,7 @@ func TestICSE(threads int) error {
 	if err != nil {
 		return fmt.Errorf("function GetBlockByNumber error: %s", err)
 	}
-	//集合810~849区块中的所有交易
+	//集合810~849区块中的所有交易，总共5577个
 	min, max, addSpan := big.NewInt(9776810), big.NewInt(9776850), big.NewInt(1)
 	var concurrentTxs types.Transactions
 	for i := min; i.Cmp(max) == -1; i = i.Add(i, addSpan) {
@@ -48,7 +52,7 @@ func TestICSE(threads int) error {
 		newTxs := block.Transactions()
 		concurrentTxs = append(concurrentTxs, newTxs...)
 	}
-	// 取810号区块并将原810~849区块中所有交易放入，构造本项目所用的区块
+	// 取810号区块并将原810~849区块中所有交易放入，构造本项目所用的一个大区块startBlock
 	startBlock, err := database.GetBlockByNumber(db, new(big.Int).SetUint64(9776810))
 	if err != nil {
 		return fmt.Errorf("get block 9776810 error: %s", err)
@@ -65,36 +69,57 @@ func TestICSE(threads int) error {
 		blockContext = core.NewEVMBlockContext(startBlock.Header(), db, nil)
 	)
 
-	//// stateDB存在于内存中，stateDB中的db字段为stateCache
-	//startStateDB, err := state.New(parent.Root, stateCache, nil)
-	//if err != nil {
-	//	fmt.Println(err)
-	//}
-	// 新建所有交易共用的数据库stateDB
+	// 新建所有交易共用的数据库stateDB，储存多版本stateobject
 	stateDb, err := state.NewIcseStateDB(*parentRoot, stateCache, snaps) // IcseStateDB类型，表征一个状态，需要由db变量构造而来
 	if stateDb == nil {
 		return fmt.Errorf("function state.NewIcseStateDB error: %s", err)
 	}
+	// 再准备一个状态数据库，用于模拟执行交易从而生成依赖图
+	stateDbForSimulation := stateDb.Copy()
 
-	// 开始
+	// 尚不可执行的交易队列（因为storage<next，所以尚不可执行）
 	Htxs := minHeap.NewTxsHeap()
-	for i, _ := range concurrentTxs {
-		Htxs.Push(-1, i, 0)
-	}
+	// 已经可以执行，但是处于等待状态的交易队列
 	Hready := minHeap.NewReadyHeap()
+	// 执行完毕，等待验证的交易队列
 	Hcommit := minHeap.NewCommitHeap()
-	next := 0
 
-	// start thread
+	// start thread 开启多个线程，每个线程从
 	for i := 0; i < threads; i++ {
-		go func() {
-			thread := core.NewThread(stateDb, startBlock, blockContext, Hready, Hcommit)
-			thread.Run()
-		}()
+		go func(threadID int) {
+			thread := core.NewThread(threadID, stateDb, stateDbForSimulation, Hready, Hcommit, startBlock, blockContext, config.MainnetChainConfig)
+			thread.Run(PrintDetails)
+		}(i)
 	}
 
-	// start scheduler:  OCC-DA
-	for next < len(concurrentTxs) {
+	// 构建依赖图，所有交易的执行都遵循初始的快照版本，也即storageVersion=-1的状态版本
+	fmt.Println("开始构建依赖图")
+	var dg *dependencyGraph.DependencyGraph
+	dg = dependencyGraph.ConstructDependencyGraph(len(concurrentTxs), Hready, Hcommit, stateDbForSimulation)
+	fmt.Printf("依赖图构建完成，如下所示，map[交易]=>该交易依赖的交易中序号最大的一个：\n%+v\n", dg.TxDependencyMap)
+
+	// 执行DCC-DA算法
+	fmt.Println("开始执行DCC-DA")
+	DCCDA(len(concurrentTxs), Htxs, Hready, Hcommit, stateDb, dg)
+	fmt.Println("DCC-DA执行结束")
+
+	return nil
+}
+
+func DCCDA(txNum int, Htxs *minHeap.TxsHeap, Hready *minHeap.ReadyHeap, Hcommit *minHeap.CommitHeap, stateDb *state.IcseStateDB, dg *dependencyGraph.DependencyGraph) {
+	// 按照论文的说法，如果没有给定交易依赖图，那么所有交易的sv(storageVersion)就默认设置为-1，否则设置为交易的依赖中序号最大的那个
+	if dg == nil {
+		for i := 0; i < txNum; i++ {
+			Htxs.Push(-1, i, 0)
+		}
+	} else {
+		for i := 0; i < txNum; i++ {
+			Htxs.Push(dg.TxDependencyMap[i], i, 0)
+		}
+	}
+
+	next := 0
+	for next < txNum {
 		// Stage 1: Schedule
 		for true {
 			txToCheckReady := Htxs.Pop()
@@ -105,12 +130,12 @@ func TestICSE(threads int) error {
 				Htxs.Push(txToCheckReady.StorageVersion, txToCheckReady.Index, txToCheckReady.Incarnation)
 				break
 			} else {
-				Hready.Push(txToCheckReady.Index, txToCheckReady.Incarnation, txToCheckReady.StorageVersion)
+				Hready.Push(txToCheckReady.Index, txToCheckReady.Incarnation, txToCheckReady.StorageVersion, false)
 			}
 		}
 
 		// Stage 2: Execution
-		// thread will fetch tasks itself
+		// thread will fetch tasks from Hready itself
 		// after execution, tasks will be push into Hcommit
 
 		// Stage 3: Commit/Abort
@@ -123,20 +148,24 @@ func TestICSE(threads int) error {
 				Hcommit.Push(txToCommit.Index, txToCommit.Incarnation, txToCommit.StorageVersion)
 				break
 			}
-			aborted := stateDb.ValidateReadSet(txToCommit.Index)
+			aborted := !stateDb.ValidateReadSet(txToCommit.Index, txToCommit.Incarnation, PrintDetails)
 			if aborted {
+				if PrintDetails {
+					fmt.Printf("交易%+v验证失败\n", txToCommit)
+				}
 				Htxs.Push(txToCommit.Index-1, txToCommit.Index, txToCommit.Incarnation+1)
 			} else {
+				if PrintDetails {
+					fmt.Printf("交易%+v验证成功\n", txToCommit)
+				}
 				Commit(txToCommit)
 				next += 1
 			}
 		}
 	}
-
-	return nil
 }
 
 func Commit(tx *minHeap.CommitItem) {
-	// 提交阶段什么都不用做，因为每笔交易执行完都会已经将自己的写集放入公用的statedb中的多版本stateobject中
-	// 每笔交易每次执行时都参照一个稳定的快照版本sv，这是通过读取多版本stateobject时无法读到比sv更大的数据实现的
+	// 提交阶段什么都不做，因为每笔交易执行完都会已经将写集放入公用的statedb中的多版本stateobject中，最终结果就参照该公用数据库
+	// 每笔交易每次执行时都参照一个稳定的快照版本sv，这是通过读取多版本stateobject时无法读到比sv更大版本的数据实现的
 }

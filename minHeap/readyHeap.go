@@ -9,8 +9,11 @@ type ReadyItem struct {
 	Index          int
 	Incarnation    int
 	StorageVersion int
+	// 该任务是否是模拟生成读写集的任务（如果是的话，线程就会用publicStateDB2来执行交易）
+	IsSimulation bool
 }
 
+// ReadyHeap 一个并发安全的最小堆，堆中元素为 ReadyItem，Index越小排在越前面，Index相等时StorageVersion越小排在越前面
 type ReadyHeap struct {
 	readyHeap *readyHeap
 	mutex     sync.Mutex
@@ -25,7 +28,7 @@ func NewReadyHeap() *ReadyHeap {
 	return h
 }
 
-func (h *ReadyHeap) Push(Index int, Incarnation int, StorageVersion int) {
+func (h *ReadyHeap) Push(Index int, Incarnation int, StorageVersion int, IsSimulation bool) {
 	h.mutex.Lock()
 	defer h.mutex.Unlock()
 
@@ -33,6 +36,7 @@ func (h *ReadyHeap) Push(Index int, Incarnation int, StorageVersion int) {
 		Index:          Index,
 		Incarnation:    Incarnation,
 		StorageVersion: StorageVersion,
+		IsSimulation:   IsSimulation,
 	}
 	heap.Push(h.readyHeap, nodeToPush)
 }

@@ -78,7 +78,7 @@ func (s *stmTxStateObject) GetState(key common.Hash) common.Hash {
 		return origin
 	}
 	// 否则需并发的从statedb中读取
-	readRes := s.stateDB.readStorageVersion(s.address, key, s.txIndex, s.txStorageVersion)
+	readRes := s.stateDB.readStorageVersion(s.address, key, s.txStorageVersion)
 	if err := s.stmTx.process(readRes, s.address, &key); err != nil {
 		//log.Println(err)
 		if err.Error() == "notFound" {
@@ -98,7 +98,7 @@ func (s *stmTxStateObject) GetCommittedState(key common.Hash) common.Hash {
 		return origin
 	}
 	// 否则需并发的从statedb中读取
-	readRes := s.stateDB.readStorageVersion(s.address, key, s.txIndex, s.txStorageVersion)
+	readRes := s.stateDB.readStorageVersion(s.address, key, s.txStorageVersion)
 	if err := s.stmTx.process(readRes, s.address, &key); err != nil {
 		//log.Println(err)
 		if err.Error() == "notFound" {

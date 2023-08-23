@@ -11,6 +11,7 @@ type CommitItem struct {
 	StorageVersion int
 }
 
+// CommitHeap 一个并发安全的最小堆，堆中元素为 CommitItem，Index越小排在越前面，Index相等时StorageVersion越小排在越前面
 type CommitHeap struct {
 	commitHeap *commitHeap
 	mutex      sync.Mutex
