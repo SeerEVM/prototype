@@ -84,7 +84,7 @@ func TestICSE(threads int) error {
 	// 执行完毕，等待验证的交易队列
 	Hcommit := minHeap.NewCommitHeap()
 
-	// start thread 开启多个线程，每个线程从
+	// start thread 开启多个线程，每个线程从Hready中抽取任务进行执行，执行完成后放入Hcommit中
 	for i := 0; i < threads; i++ {
 		go func(threadID int) {
 			thread := core.NewThread(threadID, stateDb, stateDbForSimulation, Hready, Hcommit, startBlock, blockContext, config.MainnetChainConfig)
