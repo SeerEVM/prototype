@@ -22,7 +22,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
-	"icse/core/types"
+	"prophetEVM/core/types"
 )
 
 // ReadSkeletonSyncStatus retrieves the serialized sync status saved at shutdown.

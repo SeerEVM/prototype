@@ -24,8 +24,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	cmath "github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/params"
-	"icse/core/types"
-	"icse/core/vm"
+	"prophetEVM/core/types"
+	"prophetEVM/core/vm"
 )
 
 // ExecutionResult includes all output after executing given evm
@@ -176,6 +176,11 @@ func ApplyMessage(evm *vm.EVM, msg *Message, gp *GasPool) (*ExecutionResult, err
 	return NewStateTransition(evm, msg, gp).TransitionDb()
 }
 
+// FastApplyMessage defines a fast path version of 'ApplyMessage'
+func FastApplyMessage(evm *vm.EVM, msg *Message, gp *GasPool, gas uint64, snapshot *vm.FinalSnapshot) (*ExecutionResult, error) {
+	return NewStateTransition(evm, msg, gp).FastTransitionDb(gas, snapshot)
+}
+
 // StateTransition represents a state transition.
 //
 // == The State Transitioning Model
@@ -230,7 +235,7 @@ func (st *StateTransition) to() common.Address {
 	return *st.msg.To
 }
 
-func (st *StateTransition) buyGas() error {
+func (st *StateTransition) buyGas(isPreExecution bool) error {
 	mgval := new(big.Int).SetUint64(st.msg.GasLimit)
 	mgval = mgval.Mul(mgval, st.msg.GasPrice)
 	balanceCheck := mgval
@@ -247,14 +252,17 @@ func (st *StateTransition) buyGas() error {
 	}
 	st.gasRemaining += st.msg.GasLimit
 
-	st.balance = st.state.GetBalance(st.msg.From)
 	st.initialGas = st.msg.GasLimit
-	st.state.SubBalance(st.msg.From, mgval)
+	// 在预执行中不进行gas的扣除
+	if !isPreExecution {
+		st.balance = st.state.GetBalance(st.msg.From)
+		st.state.SubBalance(st.msg.From, mgval)
+	}
 	st.preSubGas.Set(mgval) // 预扣除的手续费
 	return nil
 }
 
-func (st *StateTransition) preCheck() error {
+func (st *StateTransition) preCheck(isPreExecution bool) error {
 	// Only check transactions that are not fake
 	msg := st.msg
 	if !msg.SkipAccountChecks {
@@ -296,13 +304,13 @@ func (st *StateTransition) preCheck() error {
 			}
 			// This will panic if baseFee is nil, but basefee presence is verified
 			// as part of header validation.
-			if msg.GasFeeCap.Cmp(st.evm.Context.BaseFee) < 0 {
-				return fmt.Errorf("%w: address %v, maxFeePerGas: %s baseFee: %s", ErrFeeCapTooLow,
-					msg.From.Hex(), msg.GasFeeCap, st.evm.Context.BaseFee)
-			}
+			//if msg.GasFeeCap.Cmp(st.evm.Context.BaseFee) < 0 {
+			//	return fmt.Errorf("%w: address %v, maxFeePerGas: %s baseFee: %s", ErrFeeCapTooLow,
+			//		msg.From.Hex(), msg.GasFeeCap, st.evm.Context.BaseFee)
+			//}
 		}
 	}
-	return st.buyGas()
+	return st.buyGas(isPreExecution)
 }
 
 // TransitionDb will transition the state by applying the current message and
@@ -327,7 +335,117 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	// 6. caller has enough balance to cover asset transfer for **topmost** call
 
 	// Check clauses 1-3, buy gas if everything is correct
-	if err := st.preCheck(); err != nil {
+	if err := st.preCheck(st.evm.IsPreExecution()); err != nil {
+		return nil, err
+	}
+	// 是否需要退出
+	if st.state.GetDBError() != nil {
+		return &ExecutionResult{
+			UsedGas:    st.gasUsed(),
+			Err:        nil,
+			ReturnData: nil,
+		}, nil
+	}
+
+	if st.evm.Config.Debug {
+		st.evm.Config.Tracer.CaptureTxStart(st.initialGas)
+		defer func() {
+			st.evm.Config.Tracer.CaptureTxEnd(st.gasRemaining)
+		}()
+	}
+
+	var (
+		msg              = st.msg
+		sender           = vm.AccountRef(msg.From)
+		rules            = st.evm.ChainConfig().Rules(st.evm.Context.BlockNumber, st.evm.Context.Random != nil, st.evm.Context.Time)
+		contractCreation = msg.To == nil
+	)
+
+	// Check clauses 4-5, subtract intrinsic gas if everything is correct
+	gas, err := IntrinsicGas(msg.Data, msg.AccessList, contractCreation, rules.IsHomestead, rules.IsIstanbul, rules.IsShanghai)
+	if err != nil {
+		return nil, err
+	}
+	if st.gasRemaining < gas {
+		return nil, fmt.Errorf("%w: have %d, want %d", ErrIntrinsicGas, st.gasRemaining, gas)
+	}
+	st.gasRemaining -= gas
+
+	// Check clause 6
+	if msg.Value.Sign() > 0 && !st.evm.Context.CanTransfer(st.state, msg.From, msg.Value) {
+		return nil, fmt.Errorf("%w: address %v", ErrInsufficientFundsForTransfer, msg.From.Hex())
+	}
+
+	// Check whether the init code size has been exceeded.
+	if rules.IsShanghai && contractCreation && len(msg.Data) > params.MaxInitCodeSize {
+		return nil, fmt.Errorf("%w: code size %v limit %v", ErrMaxInitCodeSizeExceeded, len(msg.Data), params.MaxInitCodeSize)
+	}
+
+	// Execute the preparatory steps for state transition which includes:
+	// - prepare accessList(post-berlin)
+	// - reset transient storage(eip 1153)
+	st.state.Prepare(rules, msg.From, st.evm.Context.Coinbase, msg.To, vm.ActivePrecompiles(rules), msg.AccessList)
+
+	var (
+		ret   []byte
+		vmerr error // vm errors do not effect consensus and are therefore not assigned to err
+	)
+	if contractCreation {
+		ret, _, st.gasRemaining, vmerr = st.evm.Create(sender, msg.Data, st.gasRemaining, msg.Value)
+	} else {
+		// Increment the nonce for the next transaction
+		if !st.evm.IsPreExecution() {
+			st.state.SetNonce(msg.From, st.state.GetNonce(sender.Address())+1)
+		}
+		ret, st.gasRemaining, vmerr = st.evm.Call(sender, st.to(), msg.Data, st.gasRemaining, msg.Value)
+	}
+
+	if !rules.IsLondon {
+		// Before EIP-3529: refunds were capped to gasUsed / 2
+		st.refundGas(params.RefundQuotient)
+	} else {
+		// After EIP-3529: refunds are capped to gasUsed / 5
+		st.refundGas(params.RefundQuotientEIP3529)
+	}
+	effectiveTip := msg.GasPrice
+	if rules.IsLondon {
+		effectiveTip = cmath.BigMin(msg.GasTipCap, new(big.Int).Sub(msg.GasFeeCap, st.evm.Context.BaseFee))
+	}
+
+	if st.evm.Config.NoBaseFee && msg.GasFeeCap.Sign() == 0 && msg.GasTipCap.Sign() == 0 {
+		// Skip fee payment when NoBaseFee is set and the fee fields
+		// are 0. This avoids a negative effectiveTip being applied to
+		// the coinbase when simulating calls.
+	} else {
+		fee := new(big.Int).SetUint64(st.gasUsed())
+		fee.Mul(fee, effectiveTip)
+		// 矿工地址的手续费与区块奖励不予记录在读写集中
+		if !st.evm.IsPreExecution() {
+			st.state.AddBalance(st.evm.Context.Coinbase, fee)
+		}
+	}
+
+	return &ExecutionResult{
+		UsedGas:    st.gasUsed(),
+		Err:        vmerr,
+		ReturnData: ret,
+	}, nil
+}
+
+// FastTransitionDb performs fast-path state transitions
+func (st *StateTransition) FastTransitionDb(remainingGas uint64, final *vm.FinalSnapshot) (*ExecutionResult, error) {
+	// First check this message satisfies all consensus rules before
+	// applying the message. The rules include these clauses
+	//
+	// 1. the nonce of the message caller is correct
+	// 2. caller has enough balance to cover transaction fee(gaslimit * gasprice)
+	// 3. the amount of gas required is available in the block
+	// 4. the purchased gas is enough to cover intrinsic usage
+	// 5. there is no overflow when calculating intrinsic gas
+	// 6. caller has enough balance to cover asset transfer for **topmost** call
+
+	// Check clauses 1-3, buy gas if everything is correct
+	if err := st.preCheck(st.evm.IsPreExecution()); err != nil {
 		return nil, err
 	}
 	// 是否需要退出
@@ -387,7 +505,13 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	} else {
 		// Increment the nonce for the next transaction
 		st.state.SetNonce(msg.From, st.state.GetNonce(sender.Address())+1)
-		ret, st.gasRemaining, vmerr = st.evm.Call(sender, st.to(), msg.Data, st.gasRemaining, msg.Value)
+		if final == nil {
+			ret, st.gasRemaining, vmerr = st.evm.Call(sender, st.to(), msg.Data, remainingGas, msg.Value)
+		} else {
+			ret = final.GetResult()
+			st.gasRemaining = final.GetGas()
+			vmerr = final.GetError()
+		}
 	}
 
 	if !rules.IsLondon {
@@ -409,6 +533,7 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	} else {
 		fee := new(big.Int).SetUint64(st.gasUsed())
 		fee.Mul(fee, effectiveTip)
+		// 矿工地址的手续费与区块奖励不予记录在读写集中
 		st.state.AddBalance(st.evm.Context.Coinbase, fee)
 	}
 
@@ -429,7 +554,9 @@ func (st *StateTransition) refundGas(refundQuotient uint64) {
 
 	// Return ETH for remaining gas, exchanged at the original rate.
 	remaining := new(big.Int).Mul(new(big.Int).SetUint64(st.gasRemaining), st.msg.GasPrice)
-	st.state.AddBalance(st.msg.From, remaining)
+	if !st.evm.IsPreExecution() {
+		st.state.AddBalance(st.msg.From, remaining)
+	}
 
 	st.preSubGas.Sub(st.preSubGas, remaining) // 多扣的手续费返还
 

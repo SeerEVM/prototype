@@ -19,7 +19,7 @@ package core
 import (
 	"errors"
 
-	"icse/core/types"
+	"prophetEVM/core/types"
 )
 
 var (

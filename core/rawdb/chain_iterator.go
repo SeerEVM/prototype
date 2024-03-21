@@ -26,7 +26,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
-	"icse/core/types"
+	"prophetEVM/core/types"
 )
 
 // InitDatabaseFromFreezer reinitializes an empty database from a previous batch

@@ -14,10 +14,13 @@ type RawConfig struct {
 func DefaultRawConfig() *RawConfig {
 	if runtime.GOOS == "darwin" { // MacOS
 		return &RawConfig{
-			Path:      "/Volumes/ETH_DATA/ethereum/geth/chaindata",
-			Cache:     2048,
-			Handles:   5120,
-			Ancient:   "/Volumes/ETH_DATA/ethereum/geth/chaindata/ancient",
+			//Path:      "/Volumes/ETH_DATA/ethereum/geth/chaindata",
+			//Path:      "/Volumes/ETH_DATA/ethereumdata/copychain",
+			Path:    "/Users/zsj/Downloads/ethereumdata/copychain",
+			Cache:   2048,
+			Handles: 5120,
+			//Ancient:   "/Volumes/ETH_DATA/ethereumdata/copychain/ancient",
+			Ancient:   "/Users/zsj/Downloads/ethereumdata/copychain/ancient",
 			Namespace: "eth/db/chaindata/",
 			ReadOnly:  false,
 		}

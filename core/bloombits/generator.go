@@ -19,7 +19,7 @@ package bloombits
 import (
 	"errors"
 
-	"icse/core/types"
+	"prophetEVM/core/types"
 )
 
 var (

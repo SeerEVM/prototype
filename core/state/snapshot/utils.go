@@ -25,7 +25,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
-	"icse/core/rawdb"
+	"prophetEVM/core/rawdb"
 )
 
 // CheckDanglingStorage iterates the snap storage data, and verifies that all

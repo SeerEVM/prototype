@@ -13,8 +13,8 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/rlp"
-	"icse/core/types"
-	"icse/trie"
+	"prophetEVM/core/types"
+	"prophetEVM/trie"
 )
 
 // TxInfoMini defines a version of tx execution

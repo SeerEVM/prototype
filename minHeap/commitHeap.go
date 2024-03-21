@@ -2,6 +2,7 @@ package minHeap
 
 import (
 	"container/heap"
+	"prophetEVM/core/state"
 	"sync"
 )
 
@@ -9,6 +10,18 @@ type CommitItem struct {
 	Index          int
 	Incarnation    int
 	StorageVersion int
+	LastReads      []*state.ReadLoc
+	LastWrites     state.WriteSets
+}
+
+func NewCommitItem(Index int, Incarnation int, StorageVersion int, ReadSet []*state.ReadLoc, WriteSet state.WriteSets) *CommitItem {
+	return &CommitItem{
+		Index:          Index,
+		Incarnation:    Incarnation,
+		StorageVersion: StorageVersion,
+		LastReads:      ReadSet,
+		LastWrites:     WriteSet,
+	}
 }
 
 // CommitHeap 一个并发安全的最小堆，堆中元素为 CommitItem，Index越小排在越前面，Index相等时StorageVersion越小排在越前面
@@ -26,15 +39,9 @@ func NewCommitHeap() *CommitHeap {
 	return h
 }
 
-func (h *CommitHeap) Push(Index int, Incarnation int, StorageVersion int) {
+func (h *CommitHeap) Push(nodeToPush *CommitItem) {
 	h.mutex.Lock()
 	defer h.mutex.Unlock()
-
-	nodeToPush := &CommitItem{
-		Index:          Index,
-		Incarnation:    Incarnation,
-		StorageVersion: StorageVersion,
-	}
 	heap.Push(h.commitHeap, nodeToPush)
 }
 

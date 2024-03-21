@@ -31,9 +31,9 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/params"
-	"icse/core"
-	"icse/core/state"
-	"icse/core/types"
+	"prophetEVM/core"
+	"prophetEVM/core/state"
+	"prophetEVM/core/types"
 )
 
 const (

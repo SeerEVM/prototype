@@ -7,8 +7,8 @@ import (
 	"github.com/ethereum/go-ethereum/eth/gasprice"
 	"github.com/ethereum/go-ethereum/miner"
 	"github.com/ethereum/go-ethereum/params"
-	"icse/core"
-	"icse/core/txpool"
+	"prophetEVM/core"
+	"prophetEVM/core/txpool"
 	"time"
 )
 

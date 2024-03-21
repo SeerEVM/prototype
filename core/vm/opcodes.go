@@ -18,6 +18,7 @@ package vm
 
 import (
 	"fmt"
+	"github.com/holiman/uint256"
 )
 
 // OpCode is an EVM opcode
@@ -557,4 +558,58 @@ var stringToOp = map[string]OpCode{
 // StringToOp finds the opcode whose name is stored in `str`.
 func StringToOp(str string) OpCode {
 	return stringToOp[str]
+}
+
+// Compute conducts computation according to the input opcode
+func Compute(x, y *uint256.Int, op OpCode) {
+	switch op {
+	case ADD:
+		y.Add(x, y)
+	case MUL:
+		y.Mul(x, y)
+	case SUB:
+		y.Sub(x, y)
+	case DIV:
+		y.Div(x, y)
+	case SDIV:
+		y.SDiv(x, y)
+	case MOD:
+		y.Mod(x, y)
+	case SMOD:
+		y.SMod(x, y)
+	case EXP:
+		y.Exp(x, y)
+	//case SIGNEXTEND:
+	//	y.ExtendSign(y, x)
+	case EQ:
+		if x.Eq(y) {
+			y.SetOne()
+		} else {
+			y.Clear()
+		}
+	case LT:
+		if x.Lt(y) {
+			y.SetOne()
+		} else {
+			y.Clear()
+		}
+	case GT:
+		if x.Gt(y) {
+			y.SetOne()
+		} else {
+			y.Clear()
+		}
+	case SLT:
+		if x.Slt(y) {
+			y.SetOne()
+		} else {
+			y.Clear()
+		}
+	case SGT:
+		if x.Sgt(y) {
+			y.SetOne()
+		} else {
+			y.Clear()
+		}
+	}
 }

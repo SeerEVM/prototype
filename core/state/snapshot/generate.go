@@ -20,8 +20,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"icse/trie"
 	"math/big"
+	"prophetEVM/trie"
 	"time"
 
 	"github.com/VictoriaMetrics/fastcache"
@@ -30,8 +30,8 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
-	"icse/core/rawdb"
-	"icse/core/types"
+	"prophetEVM/core/rawdb"
+	"prophetEVM/core/types"
 )
 
 var (

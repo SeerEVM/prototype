@@ -21,7 +21,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"icse/core/vm"
+	"prophetEVM/core/vm"
 )
 
 // Iterator for disassembled EVM instructions

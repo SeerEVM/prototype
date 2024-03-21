@@ -21,6 +21,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
+	"github.com/holiman/uint256"
 )
 
 // Config are the configuration options for the Interpreter
@@ -35,9 +36,11 @@ type Config struct {
 // ScopeContext contains the things that are per-call, such as stack and memory,
 // but not transients like pc and gas
 type ScopeContext struct {
-	Memory   *Memory
-	Stack    *Stack
-	Contract *Contract
+	Memory    *Memory
+	Stack     StackInterface
+	Contract  *Contract
+	TmpState  *TmpState
+	Signature string
 }
 
 // EVMInterpreter represents an EVM interpreter
@@ -48,37 +51,54 @@ type EVMInterpreter struct {
 	hasher    crypto.KeccakState // Keccak256 hasher instance shared across opcodes
 	hasherBuf common.Hash        // Keccak256 hasher result array shared aross opcodes
 
-	readOnly   bool   // Whether to throw on stateful modifications
-	returnData []byte // Last CALL's return data for subsequent reuse
+	isPreExecution bool   // Whether to conduct pre-execution
+	isFastEnabled  bool   // Whether to initiate fast path execution or repair
+	readOnly       bool   // Whether to throw on stateful modifications
+	repair         bool   // Whether the repair needs to be conducted at the end of a transaction execution (only enabled during pre-execution)
+	returnData     []byte // Last CALL's return data for subsequent reuse
+
+	callMap     map[int]*Snapshot                                      // records the call stack mapping from the call depth to the snapshot
+	repairedLoc map[common.Address]map[common.Hash]map[string]struct{} // records write location leading to pre-execution repair
 }
 
 // NewEVMInterpreter returns a new instance of the Interpreter.
-func NewEVMInterpreter(evm *EVM) *EVMInterpreter {
+func NewEVMInterpreter(evm *EVM, isPreExecution bool) *EVMInterpreter {
 	// If jump table was not initialised we set the default one.
 	var table *JumpTable
 	switch {
 	case evm.chainRules.IsShanghai:
-		table = &shanghaiInstructionSet
+		t := newShanghaiInstructionSet(isPreExecution)
+		table = &t
 	case evm.chainRules.IsMerge:
-		table = &mergeInstructionSet
+		t := newMergeInstructionSet(isPreExecution)
+		table = &t
 	case evm.chainRules.IsLondon:
-		table = &londonInstructionSet
+		t := newLondonInstructionSet(isPreExecution)
+		table = &t
 	case evm.chainRules.IsBerlin:
-		table = &berlinInstructionSet
+		t := newBerlinInstructionSet(isPreExecution)
+		table = &t
 	case evm.chainRules.IsIstanbul:
-		table = &istanbulInstructionSet
+		t := newIstanbulInstructionSet(isPreExecution)
+		table = &t
 	case evm.chainRules.IsConstantinople:
-		table = &constantinopleInstructionSet
+		t := newConstantinopleInstructionSet(isPreExecution)
+		table = &t
 	case evm.chainRules.IsByzantium:
-		table = &byzantiumInstructionSet
+		t := newByzantiumInstructionSet(isPreExecution)
+		table = &t
 	case evm.chainRules.IsEIP158:
-		table = &spuriousDragonInstructionSet
+		t := newSpuriousDragonInstructionSet(isPreExecution)
+		table = &t
 	case evm.chainRules.IsEIP150:
-		table = &tangerineWhistleInstructionSet
+		t := newTangerineWhistleInstructionSet(isPreExecution)
+		table = &t
 	case evm.chainRules.IsHomestead:
-		table = &homesteadInstructionSet
+		t := newHomesteadInstructionSet(isPreExecution)
+		table = &t
 	default:
-		table = &frontierInstructionSet
+		t := newFrontierInstructionSet(isPreExecution)
+		table = &t
 	}
 	var extraEips []int
 	if len(evm.Config.ExtraEips) > 0 {
@@ -94,7 +114,14 @@ func NewEVMInterpreter(evm *EVM) *EVMInterpreter {
 		}
 	}
 	evm.Config.ExtraEips = extraEips
-	return &EVMInterpreter{evm: evm, table: table}
+	return &EVMInterpreter{
+		evm:            evm,
+		table:          table,
+		isPreExecution: isPreExecution,
+		isFastEnabled:  false,
+		repair:         false,
+		repairedLoc:    make(map[common.Address]map[common.Hash]map[string]struct{}),
+	}
 }
 
 // Run loops and evaluates the contract's code with the given input data and returns
@@ -127,12 +154,9 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 	var (
 		op          OpCode        // current opcode
 		mem         = NewMemory() // bound memory
-		stack       = newstack()  // local stack
-		callContext = &ScopeContext{
-			Memory:   mem,
-			Stack:    stack,
-			Contract: contract,
-		}
+		tmp         *TmpState
+		callContext *ScopeContext
+		stack       StackInterface
 		// For optimisation reason we're using uint64 as the program counter.
 		// It's theoretically possible to go above 2^64. The YP defines the PC
 		// to be uint256. Practically much less so feasible.
@@ -144,11 +168,43 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		logged  bool   // deferred EVMLogger should ignore already logged steps
 		res     []byte // result of the opcode execution function
 	)
+
+	if in.isPreExecution {
+		stack = newPreStack()
+		tmp = NewTmpState()
+		callContext = &ScopeContext{
+			Memory:   mem,
+			Stack:    stack,
+			Contract: contract,
+			TmpState: tmp,
+		}
+	} else {
+		stack = newstack()
+		tmp = nil
+		callContext = &ScopeContext{
+			Memory:   mem,
+			Stack:    stack,
+			Contract: contract,
+			TmpState: tmp,
+		}
+	}
+
+	// use the cached snapshot
+	if in.isFastEnabled {
+		if snapshot, ok := in.callMap[in.evm.depth]; ok {
+			mem = snapshot.GetMemory()
+			pc = snapshot.GetPC()
+			stack = snapshot.GetStack()
+			callContext.Memory = mem
+			callContext.Stack = stack
+		}
+	}
+
 	// Don't move this deferred function, it's placed before the capturestate-deferred method,
 	// so that it get's executed _after_: the capturestate needs the stacks before
 	// they are returned to the pools
 	defer func() {
-		returnStack(stack)
+		callContext.Stack.returnStack()
 	}()
 	contract.Input = input
 
@@ -178,7 +234,7 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		operation := in.table[op]
 		cost = operation.constantGas // For tracing
 		// Validate stack
-		if sLen := stack.len(); sLen < operation.minStack {
+		if sLen := callContext.Stack.len(); sLen < operation.minStack {
 			return nil, &ErrStackUnderflow{stackLen: sLen, required: operation.minStack}
 		} else if sLen > operation.maxStack {
 			return nil, &ErrStackOverflow{stackLen: sLen, limit: operation.maxStack}
@@ -194,7 +250,7 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 			// Memory check needs to be done prior to evaluating the dynamic gas portion,
 			// to detect calculation overflows
 			if operation.memorySize != nil {
-				memSize, overflow := operation.memorySize(stack)
+				memSize, overflow := operation.memorySize(callContext.Stack)
 				if overflow {
 					return nil, ErrGasUintOverflow
 				}
@@ -207,7 +263,7 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 			// Consume the gas and return an error if not enough gas is available.
 			// cost is explicitly set so that the capture state defer method can get the proper cost
 			var dynamicCost uint64
-			dynamicCost, err = operation.dynamicGas(in.evm, contract, stack, mem, memorySize)
+			dynamicCost, err = operation.dynamicGas(in.evm, contract, callContext.Stack, mem, memorySize)
 			cost += dynamicCost // for tracing
 			if err != nil || !contract.UseGas(dynamicCost) {
 				return nil, ErrOutOfGas
@@ -243,4 +299,36 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 	}
 
 	return res, err
+}
+
+func (in *EVMInterpreter) GetRepair() bool { return in.repair }
+func (in *EVMInterpreter) GetRepairedLoc() map[common.Address]map[common.Hash]map[string]struct{} {
+	return in.repairedLoc
+}
+func (in *EVMInterpreter) SetCallMap(callMap map[int]*Snapshot) { in.callMap = callMap }
+func (in *EVMInterpreter) SetFastEnabled()                      { in.isFastEnabled = true }
+
+//func (in *EVMInterpreter) ClearRepair() {
+//	in.repair = false
+//	in.repairedLoc = make(map[common.Address]map[common.Hash]map[int]struct{})
+//}
+
+func (in *EVMInterpreter) InsertRepairedLoc(contractAddr common.Address, slot common.Hash, offset uint256.Int) {
+	slotMap, ok := in.repairedLoc[contractAddr]
+	if ok {
+		offsetMap, ok2 := slotMap[slot]
+		if ok2 {
+			offsetMap[offset.String()] = struct{}{}
+		} else {
+			offsetMap = make(map[string]struct{})
+			offsetMap[offset.String()] = struct{}{}
+			slotMap[slot] = offsetMap
+		}
+	} else {
+		slotMap = make(map[common.Hash]map[string]struct{})
+		offsetMap := make(map[string]struct{})
+		offsetMap[offset.String()] = struct{}{}
+		slotMap[slot] = offsetMap
+		in.repairedLoc[contractAddr] = slotMap
+	}
 }

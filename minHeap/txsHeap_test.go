@@ -9,22 +9,22 @@ func Test(t *testing.T) {
 
 	go func() {
 		for i := 0; i < 1000; i++ {
-			txsH.Push(i, i)
+			txsH.Push(i, i, i)
 		}
 	}()
 	go func() {
 		for i := 0; i < 1000; i++ {
-			txsH.Push(i, 1000-i)
+			txsH.Push(i, i, 1000-i)
 		}
 	}()
 	go func() {
 		for i := 0; i < 1000; i++ {
-			txsH.Push(1000-i, i)
+			txsH.Push(1000-i, 1000-i, i)
 		}
 	}()
 	go func() {
 		for i := 0; i < 1000; i++ {
-			txsH.Push(1000-i, 1000-i)
+			txsH.Push(1000-i, 1000-i, 1000-i)
 		}
 	}()
 

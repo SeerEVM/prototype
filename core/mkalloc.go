@@ -34,7 +34,7 @@ import (
 	"strconv"
 
 	"github.com/ethereum/go-ethereum/rlp"
-	"icse/core"
+	"prophetEVM/core"
 )
 
 type allocItem struct{ Addr, Balance *big.Int }

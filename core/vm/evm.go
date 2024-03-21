@@ -18,6 +18,7 @@ package vm
 
 import (
 	"math/big"
+	"prophetEVM/core/state"
 	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -82,7 +83,12 @@ type BlockContext struct {
 type TxContext struct {
 	// Message information
 	Origin   common.Address // Provides information for ORIGIN
-	GasPrice *big.Int       // Provides information for GASPRICE
+	To       *common.Address
+	Value    *big.Int
+	GasPrice *big.Int // Provides information for GASPRICE
+	GasTip   *big.Int
+	Data     []byte
+	ID       common.Hash
 }
 
 // EVM is the Ethereum Virtual Machine base object and provides
@@ -100,9 +106,14 @@ type EVM struct {
 	TxContext
 	// StateDB gives access to the underlying state
 	StateDB StateDB
+	// VarTable stores state variable (related to branch) information in memory
+	VarTable *VarTable
+	// MVCache stores multi-version state updates during pre-execution
+	MVCache *state.MVCache
+	// PreExecutionTable stores pre-execution information of transactions
+	PreExecutionTable *PreExecutionTable
 	// Depth is the current call stack
 	depth int
-
 	// chainConfig contains information about the current chain
 	chainConfig *params.ChainConfig
 	// chain rules contains the chain rules for the current epoch
@@ -124,7 +135,7 @@ type EVM struct {
 
 // NewEVM returns a new EVM. The returned EVM is not thread safe and should
 // only ever be used *once*.
-func NewEVM(blockCtx BlockContext, txCtx TxContext, statedb StateDB, chainConfig *params.ChainConfig, config Config) *EVM {
+func NewEVM(blockCtx BlockContext, txCtx TxContext, statedb StateDB, chainConfig *params.ChainConfig, config Config, isPreExecution bool) *EVM {
 	evm := &EVM{
 		Context:     blockCtx,
 		TxContext:   txCtx,
@@ -133,7 +144,23 @@ func NewEVM(blockCtx BlockContext, txCtx TxContext, statedb StateDB, chainConfig
 		chainConfig: chainConfig,
 		chainRules:  chainConfig.Rules(blockCtx.BlockNumber, blockCtx.Random != nil, blockCtx.Time),
 	}
-	evm.interpreter = NewEVMInterpreter(evm)
+	evm.interpreter = NewEVMInterpreter(evm, isPreExecution)
+	return evm
+}
+
+func NewEVM2(blockCtx BlockContext, txCtx TxContext, statedb StateDB, varTable *VarTable, preExecutionTable *PreExecutionTable, mvCache *state.MVCache, chainConfig *params.ChainConfig, config Config, isPreExecution bool) *EVM {
+	evm := &EVM{
+		Context:           blockCtx,
+		TxContext:         txCtx,
+		StateDB:           statedb,
+		VarTable:          varTable,
+		MVCache:           mvCache,
+		PreExecutionTable: preExecutionTable,
+		Config:            config,
+		chainConfig:       chainConfig,
+		chainRules:        chainConfig.Rules(blockCtx.BlockNumber, blockCtx.Random != nil, blockCtx.Time),
+	}
+	evm.interpreter = NewEVMInterpreter(evm, isPreExecution)
 	return evm
 }
 
@@ -159,6 +186,9 @@ func (evm *EVM) Cancelled() bool {
 func (evm *EVM) Interpreter() *EVMInterpreter {
 	return evm.interpreter
 }
+
+// IsPreExecution returns whether to conduct pre-execution
+func (evm *EVM) IsPreExecution() bool { return evm.interpreter.isPreExecution }
 
 // SetBlockContext updates the block context of the EVM.
 func (evm *EVM) SetBlockContext(blockCtx BlockContext) {
@@ -200,7 +230,17 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 		}
 		evm.StateDB.CreateAccount(addr)
 	}
-	evm.Context.Transfer(evm.StateDB, caller.Address(), addr, value)
+	if evm.IsPreExecution() {
+		// 缓存读写操作
+		res, _ := evm.PreExecutionTable.GetResult(evm.TxContext.ID)
+		res.CacheReadSet(caller.Address(), nil)
+		if value.Uint64() > 0 {
+			res.CacheWriteSet(caller.Address(), nil)
+			res.CacheWriteSet(addr, nil)
+		}
+	} else {
+		evm.Context.Transfer(evm.StateDB, caller.Address(), addr, value)
+	}
 
 	if evm.StateDB.GetDBError() != nil {
 		return ret, gas, nil

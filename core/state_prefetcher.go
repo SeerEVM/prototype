@@ -20,9 +20,10 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/params"
-	"icse/core/state"
-	"icse/core/types"
-	"icse/core/vm"
+	"math/big"
+	"prophetEVM/core/state"
+	"prophetEVM/core/types"
+	"prophetEVM/core/vm"
 )
 
 // StatePrefetcher is a basic Prefetcher, which blindly executes a block on top
@@ -49,7 +50,7 @@ func (p *StatePrefetcher) Prefetch(block *types.Block, statedb *state.StateDB, c
 		header       = block.Header()
 		gaspool      = new(GasPool).AddGas(block.GasLimit())
 		blockContext = NewEVMBlockContext(header, p.chainDb, nil)
-		evm          = vm.NewEVM(blockContext, vm.TxContext{}, statedb, p.config, cfg)
+		evm          = vm.NewEVM(blockContext, vm.TxContext{}, statedb, p.config, cfg, false)
 		signer       = types.MakeSigner(p.config, header.Number)
 	)
 	// Iterate over and process the individual transactions
@@ -86,7 +87,7 @@ func (p *StatePrefetcher) Prefetch(block *types.Block, statedb *state.StateDB, c
 // the transaction successfully, rather to warm up touched data slots.
 func precacheTransaction(msg *Message, config *params.ChainConfig, gaspool *GasPool, statedb *state.StateDB, header *types.Header, evm *vm.EVM) error {
 	// Update the evm with the new transaction context.
-	evm.Reset(NewEVMTxContext(msg), statedb)
+	evm.Reset(NewEVMTxContext(msg, common.Hash{}, &big.Int{}), statedb)
 	// Add addresses to access list if applicable
 	_, err := ApplyMessage(evm, msg, gaspool)
 	return err

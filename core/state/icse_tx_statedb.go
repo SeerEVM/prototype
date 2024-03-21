@@ -6,8 +6,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
-	"icse/core/types"
 	"math/big"
+	"prophetEVM/core/types"
 	"sort"
 	"strings"
 )
@@ -430,8 +430,8 @@ func (s *IcseTransaction) getDeletedStateObject(addr common.Address) *stmTxState
 	if obj := s.TxDB.stateObjects[addr]; obj != nil { // 先搜寻单版本的tx_statedb中是否记录有该obj
 		return obj
 	}
-	readRes := s.TxDB.statedb.readStateVersion(addr, s.StorageVersion) // 非官方statedb函数，再搜寻多线程共享的statedb
-	if err := s.process(readRes, addr, nil); err != nil {              // 处理读取结果，包括状态信息，并调用addRead方法把写集记录到tx_statedb.readSet
+	readRes := s.TxDB.statedb.readStateVersion(addr, s.Index) // 非官方statedb函数，再搜寻多线程共享的statedb
+	if err := s.process(readRes, addr, nil); err != nil {     // 处理读取结果，包括状态信息，并调用addRead方法把写集记录到tx_statedb.readSet
 		//log.Println(err)
 		//notFound else readOK
 		if err.Error() == "notFound" {

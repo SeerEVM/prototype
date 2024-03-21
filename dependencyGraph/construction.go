@@ -1,8 +1,8 @@
 package dependencyGraph
 
 import (
-	"icse/core/state"
-	"icse/minHeap"
+	"prophetEVM/core/state"
+	"prophetEVM/minHeap"
 )
 
 type DependencyGraph struct {
@@ -26,7 +26,7 @@ func ConstructDependencyGraph(txNum int, Hready *minHeap.ReadyHeap, Hcommit *min
 			continue
 		}
 		if txAfterExecution.Index != next {
-			Hcommit.Push(txAfterExecution.Index, txAfterExecution.Incarnation, txAfterExecution.StorageVersion)
+			Hcommit.Push(txAfterExecution)
 		} else {
 			next++
 			if next == txNum {

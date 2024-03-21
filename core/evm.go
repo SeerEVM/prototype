@@ -18,14 +18,14 @@ package core
 
 import (
 	"github.com/ethereum/go-ethereum/ethdb"
-	"icse/core/rawdb"
+	"prophetEVM/core/rawdb"
 
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
-	"icse/core/types"
-	"icse/core/vm"
+	"prophetEVM/core/types"
+	"prophetEVM/core/vm"
 )
 
 // ChainContext supports retrieving headers and consensus parameters from the
@@ -73,10 +73,15 @@ func NewEVMBlockContext(header *types.Header, chainDb ethdb.Database, author *co
 }
 
 // NewEVMTxContext creates a new transaction context for a single transaction.
-func NewEVMTxContext(msg *Message) vm.TxContext {
+func NewEVMTxContext(msg *Message, id common.Hash, tip *big.Int) vm.TxContext {
 	return vm.TxContext{
 		Origin:   msg.From,
+		To:       msg.To,
+		Value:    msg.Value,
 		GasPrice: new(big.Int).Set(msg.GasPrice),
+		GasTip:   tip,
+		Data:     msg.Data,
+		ID:       id,
 	}
 }
 

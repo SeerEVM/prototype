@@ -23,10 +23,10 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
-	"icse/core/state"
-	"icse/core/types"
-	"icse/core/vm"
 	"math/big"
+	"prophetEVM/core/state"
+	"prophetEVM/core/types"
+	"prophetEVM/core/vm"
 )
 
 // StateProcessor is a basic Processor, which takes care of transitioning
@@ -65,7 +65,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	)
 
 	blockContext := NewEVMBlockContext(header, p.chainDb, nil)
-	vmenv := vm.NewEVM(blockContext, vm.TxContext{}, statedb, p.config, cfg)
+	vmenv := vm.NewEVM(blockContext, vm.TxContext{}, statedb, p.config, cfg, false)
 
 	txsAccessAddress := make([]*types.AccessAddressMap, 0)
 	// Iterate over and process the individual transactions
@@ -106,7 +106,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 
 func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, statedb *state.StateDB, blockNumber *big.Int, blockHash common.Hash, tx *types.Transaction, usedGas *uint64, evm *vm.EVM) (*types.Receipt, error) {
 	// Create a new context to be used in the EVM environment.
-	txContext := NewEVMTxContext(msg)
+	txContext := NewEVMTxContext(msg, common.Hash{}, &big.Int{})
 	evm.Reset(txContext, statedb)
 
 	// Apply the transaction to the current state (included in the env).

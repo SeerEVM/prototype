@@ -4,14 +4,16 @@ import (
 	"fmt"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethdb"
-	"icse/config"
-	"icse/core/rawdb"
-	"icse/core/types"
 	"math/big"
+	"prophetEVM/config"
+	"prophetEVM/core/rawdb"
+	"prophetEVM/core/types"
 )
 
 // OpenDatabaseWithFreezer 新建geth提供的raw database并不加封装地返回，改动path和ancient
-func OpenDatabaseWithFreezer(ethConfig *config.EthConfig, rawConfig *RawConfig) (ethdb.Database, error) {
+func OpenDatabaseWithFreezer(ethConfig *config.EthConfig) (ethdb.Database, error) {
+	rawConfig := DefaultRawConfig()
+
 	if ethConfig.NoPruning && ethConfig.TrieDirtyCache > 0 {
 		if ethConfig.SnapshotCache > 0 {
 			ethConfig.TrieCleanCache += ethConfig.TrieDirtyCache * 3 / 5
