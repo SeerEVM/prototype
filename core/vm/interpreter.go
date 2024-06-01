@@ -53,6 +53,8 @@ type EVMInterpreter struct {
 
 	isPreExecution bool   // Whether to conduct pre-execution
 	isFastEnabled  bool   // Whether to initiate fast path execution or repair
+	isPerceptron   bool   // Whether to enable perceptron-based prediction
+	checkpoint     bool   // Whether to store checkpoint snapshots
 	readOnly       bool   // Whether to throw on stateful modifications
 	repair         bool   // Whether the repair needs to be conducted at the end of a transaction execution (only enabled during pre-execution)
 	returnData     []byte // Last CALL's return data for subsequent reuse
@@ -62,7 +64,7 @@ type EVMInterpreter struct {
 }
 
 // NewEVMInterpreter returns a new instance of the Interpreter.
-func NewEVMInterpreter(evm *EVM, isPreExecution bool) *EVMInterpreter {
+func NewEVMInterpreter(evm *EVM, isPreExecution, isPerceptron, checkpoint bool) *EVMInterpreter {
 	// If jump table was not initialised we set the default one.
 	var table *JumpTable
 	switch {
@@ -106,7 +108,7 @@ func NewEVMInterpreter(evm *EVM, isPreExecution bool) *EVMInterpreter {
 		table = copyJumpTable(table)
 	}
 	for _, eip := range evm.Config.ExtraEips {
-		if err := EnableEIP(eip, table); err != nil {
+		if err := EnableEIP(eip, table, isPreExecution); err != nil {
 			// Disable it, so caller can check if it's activated or not
 			log.Error("EIP activation failed", "eip", eip, "error", err)
 		} else {
@@ -119,6 +121,8 @@ func NewEVMInterpreter(evm *EVM, isPreExecution bool) *EVMInterpreter {
 		table:          table,
 		isPreExecution: isPreExecution,
 		isFastEnabled:  false,
+		isPerceptron:   isPerceptron,
+		checkpoint:     checkpoint,
 		repair:         false,
 		repairedLoc:    make(map[common.Address]map[common.Hash]map[string]struct{}),
 	}
@@ -194,7 +198,11 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		if snapshot, ok := in.callMap[in.evm.depth]; ok {
 			mem = snapshot.GetMemory()
 			pc = snapshot.GetPC()
-			stack = snapshot.GetStack()
+			if in.isPreExecution {
+				stack = snapshot.GetTracingStack()
+			} else {
+				stack = snapshot.GetStack()
+			}
 			callContext.Memory = mem
 			callContext.Stack = stack
 		}
@@ -234,7 +242,7 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		operation := in.table[op]
 		cost = operation.constantGas // For tracing
 		// Validate stack
-		if sLen := callContext.Stack.len(); sLen < operation.minStack {
+		if sLen := callContext.Stack.len(true); sLen < operation.minStack {
 			return nil, &ErrStackUnderflow{stackLen: sLen, required: operation.minStack}
 		} else if sLen > operation.maxStack {
 			return nil, &ErrStackOverflow{stackLen: sLen, limit: operation.maxStack}

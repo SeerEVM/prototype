@@ -135,7 +135,7 @@ type EVM struct {
 
 // NewEVM returns a new EVM. The returned EVM is not thread safe and should
 // only ever be used *once*.
-func NewEVM(blockCtx BlockContext, txCtx TxContext, statedb StateDB, chainConfig *params.ChainConfig, config Config, isPreExecution bool) *EVM {
+func NewEVM(blockCtx BlockContext, txCtx TxContext, statedb StateDB, chainConfig *params.ChainConfig, config Config, isPreExecution, isPerceptron, checkpoint bool) *EVM {
 	evm := &EVM{
 		Context:     blockCtx,
 		TxContext:   txCtx,
@@ -144,11 +144,11 @@ func NewEVM(blockCtx BlockContext, txCtx TxContext, statedb StateDB, chainConfig
 		chainConfig: chainConfig,
 		chainRules:  chainConfig.Rules(blockCtx.BlockNumber, blockCtx.Random != nil, blockCtx.Time),
 	}
-	evm.interpreter = NewEVMInterpreter(evm, isPreExecution)
+	evm.interpreter = NewEVMInterpreter(evm, isPreExecution, isPerceptron, checkpoint)
 	return evm
 }
 
-func NewEVM2(blockCtx BlockContext, txCtx TxContext, statedb StateDB, varTable *VarTable, preExecutionTable *PreExecutionTable, mvCache *state.MVCache, chainConfig *params.ChainConfig, config Config, isPreExecution bool) *EVM {
+func NewEVM2(blockCtx BlockContext, txCtx TxContext, statedb StateDB, varTable *VarTable, preExecutionTable *PreExecutionTable, mvCache *state.MVCache, chainConfig *params.ChainConfig, config Config, isPreExecution, isPerceptron, checkpoint bool) *EVM {
 	evm := &EVM{
 		Context:           blockCtx,
 		TxContext:         txCtx,
@@ -160,7 +160,7 @@ func NewEVM2(blockCtx BlockContext, txCtx TxContext, statedb StateDB, varTable *
 		chainConfig:       chainConfig,
 		chainRules:        chainConfig.Rules(blockCtx.BlockNumber, blockCtx.Random != nil, blockCtx.Time),
 	}
-	evm.interpreter = NewEVMInterpreter(evm, isPreExecution)
+	evm.interpreter = NewEVMInterpreter(evm, isPreExecution, isPerceptron, checkpoint)
 	return evm
 }
 
@@ -231,11 +231,13 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 		evm.StateDB.CreateAccount(addr)
 	}
 	if evm.IsPreExecution() {
-		// 缓存读写操作
+		// Cache the increment of nonce
 		res, _ := evm.PreExecutionTable.GetResult(evm.TxContext.ID)
 		res.CacheReadSet(caller.Address(), nil)
-		if value.Uint64() > 0 {
-			res.CacheWriteSet(caller.Address(), nil)
+		res.CacheWriteSet(caller.Address(), nil)
+		if value.Sign() != 0 {
+			// cache the transfer operation
+			res.CacheReadSet(addr, nil)
 			res.CacheWriteSet(addr, nil)
 		}
 	} else {
@@ -311,6 +313,12 @@ func (evm *EVM) CallCode(caller ContractRef, addr common.Address, input []byte, 
 	// Note although it's noop to transfer X ether to caller itself. But
 	// if caller doesn't have enough balance, it would be an error to allow
 	// over-charging itself. So the check here is necessary.
+	if evm.IsPreExecution() {
+		// Cache the increment of nonce and the balance check
+		res, _ := evm.PreExecutionTable.GetResult(evm.TxContext.ID)
+		res.CacheReadSet(caller.Address(), nil)
+		res.CacheWriteSet(caller.Address(), nil)
+	}
 	if !evm.Context.CanTransfer(evm.StateDB, caller.Address(), value) {
 		return nil, gas, ErrInsufficientBalance
 	}
@@ -415,6 +423,7 @@ func (evm *EVM) StaticCall(caller ContractRef, addr common.Address, input []byte
 	// but is the correct thing to do and matters on other networks, in tests, and potential
 	// future scenarios
 	evm.StateDB.AddBalance(addr, big0)
+
 	if evm.StateDB.GetDBError() != nil {
 		return ret, gas, nil
 	}
@@ -557,6 +566,15 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 		} else {
 			evm.Config.Tracer.CaptureExit(ret, gas-contract.Gas, err)
 		}
+	}
+
+	// Cache read/write sets
+	if evm.IsPreExecution() {
+		res, _ := evm.PreExecutionTable.GetResult(evm.TxContext.ID)
+		res.CacheReadSet(caller.Address(), nil)
+		res.CacheWriteSet(caller.Address(), nil)
+		res.CacheReadSet(address, nil)
+		res.CacheWriteSet(address, nil)
 	}
 	return ret, address, contract.Gas, err
 }

@@ -36,17 +36,19 @@ func (ts *TmpState) GetFragment(addr common.Address, slotInt uint256.Int) (*Frag
 	return nil, false
 }
 
-func (ts *TmpState) InsertUnit(addr common.Address, slotInt uint256.Int) {
+func (ts *TmpState) InsertUnit(addr common.Address, slotInt uint256.Int) *Fragment {
 	fragmentMap, ok := ts.Space[addr]
 	if !ok {
 		fragmentMap = make(map[common.Hash]*Fragment)
 		ts.Space[addr] = fragmentMap
 	}
 	slotHash := common.Hash(slotInt.Bytes32())
-	if _, ok2 := fragmentMap[slotHash]; !ok2 {
-		fragment := NewFragment(slotInt)
+	fragment, ok2 := fragmentMap[slotHash]
+	if !ok2 {
+		fragment = NewFragment(slotInt)
 		fragmentMap[slotHash] = fragment
 	}
+	return fragment
 }
 
 func NewFragment(slot uint256.Int) *Fragment {
@@ -88,8 +90,7 @@ func (f *Fragment) GenerateVar(stateUnit *StateUnit) {
 }
 
 type StateVar struct {
-	slotVal uint256.Int
-	//originalVal uint256.Int
+	slotVal    uint256.Int
 	updatedVal uint256.Int
 	offset     uint256.Int
 	bits       int

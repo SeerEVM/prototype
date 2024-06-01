@@ -81,6 +81,16 @@ func (m *Memory) GetCopy(offset, size int64) (cpy []byte) {
 	return
 }
 
+// Copy returns the copied memory structure
+func (m *Memory) Copy() *Memory {
+	cpy := make([]byte, len(m.store))
+	copy(cpy, m.store)
+	return &Memory{
+		store:       cpy,
+		lastGasCost: m.lastGasCost,
+	}
+}
+
 // GetPtr returns the offset + size
 func (m *Memory) GetPtr(offset, size int64) []byte {
 	if size == 0 {

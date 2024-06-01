@@ -6,7 +6,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/holiman/uint256"
 	"math/big"
-	"sort"
 	"strings"
 )
 
@@ -48,16 +47,14 @@ func (mvc *MVCache) GetOrCreateObject(contractAddr common.Address, slotInt uint2
 	var mvo *MVObject
 	objectMap, ok := mvc.Cache[contractAddr]
 	if ok {
-		mvo, ok2 := objectMap[slotInt.Bytes32()]
-		if ok2 {
-			return mvo
-		} else {
+		mvo = objectMap[slotInt.Bytes32()]
+		if mvo == nil {
 			mvo = NewMVObject(mvc.Epoch, isCompact)
 			objectMap[slotInt.Bytes32()] = mvo
 		}
 	} else {
 		newMap := make(map[common.Hash]*MVObject)
-		mvo := NewMVObject(mvc.Epoch, isCompact)
+		mvo = NewMVObject(mvc.Epoch, isCompact)
 		newMap[slotInt.Bytes32()] = mvo
 		mvc.Cache[contractAddr] = newMap
 	}
@@ -82,6 +79,9 @@ func (mvc *MVCache) ClearCache() {
 
 func (mvc *MVCache) SetStorageForRead(contractAddr common.Address, slotInt uint256.Int, txID common.Hash, tip *big.Int) error {
 	obj := mvc.GetOrCreateObject(contractAddr, slotInt, false)
+	if obj.slotStorage == nil {
+		obj.slotStorage = newMVRecord()
+	}
 	if err := obj.setStorageForRead(txID, tip); err != nil {
 		return err
 	}
@@ -91,6 +91,9 @@ func (mvc *MVCache) SetStorageForRead(contractAddr common.Address, slotInt uint2
 
 func (mvc *MVCache) SetStorageForWrite(contractAddr common.Address, slotInt, value uint256.Int, txID common.Hash, tip *big.Int) (bool, error) {
 	obj := mvc.GetOrCreateObject(contractAddr, slotInt, false)
+	if obj.slotStorage == nil {
+		obj.slotStorage = newMVRecord()
+	}
 	repair, err := obj.setStorageForWrite(txID, value, tip)
 	if err == nil {
 		mvc.markDirty(contractAddr, slotInt)
@@ -100,6 +103,9 @@ func (mvc *MVCache) SetStorageForWrite(contractAddr common.Address, slotInt, val
 
 func (mvc *MVCache) SetCompactedStorageForRead(contractAddr common.Address, slotInt, offset uint256.Int, txID common.Hash, tip *big.Int) error {
 	obj := mvc.GetOrCreateObject(contractAddr, slotInt, true)
+	if obj.compactedStorage == nil {
+		obj.compactedStorage = newCompactedStorage()
+	}
 	if err := obj.setCompactedStorageForRead(offset, txID, tip); err != nil {
 		return err
 	}
@@ -109,6 +115,9 @@ func (mvc *MVCache) SetCompactedStorageForRead(contractAddr common.Address, slot
 
 func (mvc *MVCache) SetCompactedStorageForWrite(contractAddr common.Address, slotInt, offset, value uint256.Int, txID common.Hash, tip *big.Int) (bool, error) {
 	obj := mvc.GetOrCreateObject(contractAddr, slotInt, true)
+	if obj.compactedStorage == nil {
+		obj.compactedStorage = newCompactedStorage()
+	}
 	repair, err := obj.setCompactedStorageForWrite(txID, offset, value, tip)
 	if err != nil {
 		mvc.markDirty(contractAddr, slotInt)
@@ -204,7 +213,7 @@ type MVObject struct {
 }
 
 func NewMVObject(epoch int, isCompact bool) *MVObject {
-	var mvo *MVObject
+	mvo := &MVObject{}
 	if !isCompact {
 		mvo.slotStorage = newMVRecord()
 	} else {
@@ -273,12 +282,18 @@ func (mvo *MVObject) setCompactedStorageForWrite(txID common.Hash, offset, value
 
 // getStorageVersion obtains the storage version at the corresponding location in the list
 func (mvo *MVObject) getStorageVersion(tip *big.Int) (*WriteVersion, error) {
+	if mvo.slotStorage == nil {
+		return nil, errors.New("not found")
+	}
 	wVersion, err := mvo.slotStorage.getWriteVersion(tip)
 	return wVersion, err
 }
 
 // getCompactedStorageVersion obtains the storage version at the corresponding location in the list (for compacted storage slot)
 func (mvo *MVObject) getCompactedStorageVersion(offset uint256.Int, tip *big.Int) (*WriteVersion, error) {
+	if mvo.compactedStorage == nil {
+		return nil, errors.New("not found")
+	}
 	rd, ok := mvo.compactedStorage.offsetMap[offset.String()]
 	if !ok {
 		rd = newMVRecord()
@@ -419,7 +434,7 @@ func (r *mvRecord) insertWriteRecord(txID common.Hash, value uint256.Int, tip *b
 }
 
 func (r *mvRecord) getWriteVersion(tip *big.Int) (*WriteVersion, error) {
-	for e := r.rRecord.Back(); e != nil; e = e.Prev() {
+	for e := r.wRecord.Back(); e != nil; e = e.Prev() {
 		ver, ok := e.Value.(*WriteVersion)
 		if !ok {
 			return nil, errors.New("wrong version format")
@@ -458,40 +473,46 @@ func (r *mvRecord) getLatestWriteVersion() (*WriteVersion, error) {
 
 func (r *mvRecord) outputTXsFromRecord(txMap map[common.Hash]struct{}) ([]common.Hash, error) {
 	var output []common.Hash
-	var sortedFees []int
-	feeMap := make(map[int][]common.Hash)
+	//var sortedFees []int
+	//feeMap := make(map[int][]common.Hash)
 
-	for e := r.wLoc.Next(); e != nil; e = e.Next() {
-		ver, ok := e.Value.(*WriteVersion)
-		if !ok {
-			return nil, errors.New("wrong version format")
-		}
-		if _, exist := txMap[ver.GetID()]; !exist {
-			fee := int(ver.GetTip().Int64())
-			sortedFees = append(sortedFees, fee)
-			feeMap[fee] = append(feeMap[fee], ver.GetID())
-			txMap[ver.GetID()] = struct{}{}
+	if r.wLoc != nil {
+		for e := r.wLoc.Next(); e != nil; e = e.Next() {
+			ver, ok := e.Value.(*WriteVersion)
+			if !ok {
+				return nil, errors.New("wrong version format")
+			}
+			if _, exist := txMap[ver.GetID()]; !exist {
+				//fee := int(ver.GetTip().Int64())
+				//sortedFees = append(sortedFees, fee)
+				//feeMap[fee] = append(feeMap[fee], ver.GetID())
+				txMap[ver.GetID()] = struct{}{}
+				output = append(output, ver.GetID())
+			}
 		}
 	}
 
-	for e := r.rLoc.Next(); e != nil; e = e.Next() {
-		ver, ok := e.Value.(*ReadVersion)
-		if !ok {
-			return nil, errors.New("wrong version format")
-		}
-		if _, exist := txMap[ver.GetID()]; !exist {
-			fee := int(ver.GetTip().Int64())
-			sortedFees = append(sortedFees, fee)
-			feeMap[fee] = append(feeMap[fee], ver.GetID())
-			txMap[ver.GetID()] = struct{}{}
+	if r.rLoc != nil {
+		for e := r.rLoc.Next(); e != nil; e = e.Next() {
+			ver, ok := e.Value.(*ReadVersion)
+			if !ok {
+				return nil, errors.New("wrong version format")
+			}
+			if _, exist := txMap[ver.GetID()]; !exist {
+				//fee := int(ver.GetTip().Int64())
+				//sortedFees = append(sortedFees, fee)
+				//feeMap[fee] = append(feeMap[fee], ver.GetID())
+				txMap[ver.GetID()] = struct{}{}
+				output = append(output, ver.GetID())
+			}
 		}
 	}
 
-	sort.Ints(sortedFees)
-	for _, fee := range sortedFees {
-		txs := feeMap[fee]
-		output = append(output, txs...)
-	}
+	//sort.Ints(sortedFees)
+	//for _, fee := range sortedFees {
+	//	txs := feeMap[fee]
+	//	output = append(output, txs...)
+	//}
 	return output, nil
 }
 

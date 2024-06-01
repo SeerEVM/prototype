@@ -17,10 +17,9 @@
 package vm
 
 import (
-	"math/big"
-
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/holiman/uint256"
+	"math/big"
 )
 
 // ContractRef is a reference to the contract's backing object
@@ -80,6 +79,30 @@ func NewContract(caller ContractRef, object ContractRef, value *big.Int, gas uin
 	c.value = value
 
 	return c
+}
+
+func (c *Contract) Copy() *Contract {
+	jumpdests := make(map[common.Hash]bitvec)
+	for key, value := range c.jumpdests {
+		jumpdests[key] = value
+	}
+	analysis := make(bitvec, len(c.analysis))
+	input := make([]byte, len(c.Input))
+	copy(analysis, c.analysis)
+	copy(input, c.Input)
+	return &Contract{
+		CallerAddress: c.CallerAddress,
+		caller:        c.caller,
+		self:          c.self,
+		jumpdests:     c.jumpdests,
+		analysis:      analysis,
+		Code:          c.Code,
+		CodeHash:      c.CodeHash,
+		CodeAddr:      c.CodeAddr,
+		Input:         input,
+		Gas:           c.Gas,
+		value:         new(big.Int).SetUint64(c.value.Uint64()),
+	}
 }
 
 func (c *Contract) validJumpdest(dest *uint256.Int) bool {

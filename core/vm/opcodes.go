@@ -17,8 +17,11 @@
 package vm
 
 import (
+	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/holiman/uint256"
+	"strings"
 )
 
 // OpCode is an EVM opcode
@@ -561,7 +564,7 @@ func StringToOp(str string) OpCode {
 }
 
 // Compute conducts computation according to the input opcode
-func Compute(x, y *uint256.Int, op OpCode) {
+func Compute(x, y *uint256.Int, op OpCode) error {
 	switch op {
 	case ADD:
 		y.Add(x, y)
@@ -579,8 +582,39 @@ func Compute(x, y *uint256.Int, op OpCode) {
 		y.SMod(x, y)
 	case EXP:
 		y.Exp(x, y)
-	//case SIGNEXTEND:
-	//	y.ExtendSign(y, x)
+	case NOT:
+		y.Not(y)
+	case AND:
+		y.And(x, y)
+	case OR:
+		y.Or(x, y)
+	case XOR:
+		y.Xor(x, y)
+	case BYTE:
+		y.Byte(x)
+	case SHL:
+		if x.LtUint64(256) {
+			y.Lsh(y, uint(x.Uint64()))
+		} else {
+			y.Clear()
+		}
+	case SHR:
+		if x.LtUint64(256) {
+			y.Rsh(y, uint(x.Uint64()))
+		} else {
+			y.Clear()
+		}
+	case SAR:
+		if x.GtUint64(256) {
+			if y.Sign() >= 0 {
+				y.Clear()
+			} else {
+				y.SetAllOne()
+			}
+		} else {
+			n := uint(x.Uint64())
+			y.SRsh(y, n)
+		}
 	case EQ:
 		if x.Eq(y) {
 			y.SetOne()
@@ -611,5 +645,57 @@ func Compute(x, y *uint256.Int, op OpCode) {
 		} else {
 			y.Clear()
 		}
+	default:
+		return errors.New("non-existent operations")
 	}
+	return nil
+}
+
+// GetEnvValue fetches the value relevant to the blockchain environment
+func GetEnvValue(op string, evm *EVM, num uint256.Int, cAddr common.Address) uint256.Int {
+	opcode := StringToOp(op)
+	v := &uint256.Int{}
+	switch opcode {
+	case GASPRICE:
+		v, _ = uint256.FromBig(evm.GasPrice)
+	case BLOCKHASH:
+		num64, overflow := num.Uint64WithOverflow()
+		if overflow {
+			v.Clear()
+		} else {
+			var upper, lower uint64
+			upper = evm.Context.BlockNumber.Uint64()
+			if upper < 257 {
+				lower = 0
+			} else {
+				lower = upper - 256
+			}
+			if num64 >= lower && num64 < upper {
+				v.SetBytes(evm.Context.GetHash(num64).Bytes())
+			} else {
+				v.Clear()
+			}
+		}
+	case COINBASE:
+		v.SetBytes(evm.Context.Coinbase.Bytes())
+	case TIMESTAMP:
+		v.SetUint64(evm.Context.Time)
+	case NUMBER:
+		v, _ = uint256.FromBig(evm.Context.BlockNumber)
+	case DIFFICULTY:
+		if strings.Compare(op, "RANDOM") == 0 {
+			v.SetBytes(evm.Context.Random.Bytes())
+		} else {
+			v, _ = uint256.FromBig(evm.Context.Difficulty)
+		}
+	case GASLIMIT:
+		v.SetUint64(evm.Context.GasLimit)
+	case BASEFEE:
+		v, _ = uint256.FromBig(evm.Context.BaseFee)
+	case BALANCE:
+		v.SetFromBig(evm.StateDB.GetBalance(cAddr))
+	case SELFBALANCE:
+		v.SetFromBig(evm.StateDB.GetBalance(cAddr))
+	}
+	return *v
 }

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="SshConfigs">
+    <configs>
+      <sshConfig host="ec2-54-88-201-244.compute-1.amazonaws.com" id="1a78754f-1113-4d33-84d7-7d5dc7a92c1b" keyPath="$USER_HOME$/Documents/阿里云密钥对/aws-zsjssh.cer" port="22" nameFormat="DESCRIPTIVE" username="ubuntu" useOpenSSHConfig="true" />
+      <sshConfig host="ec2-52-71-199-24.compute-1.amazonaws.com" id="f2b6a140-fcd2-4ec8-a1a6-c4df5e39bcfa" keyPath="$USER_HOME$/Documents/阿里云密钥对/aws-zsj2.pem" port="22" nameFormat="DESCRIPTIVE" username="ubuntu" useOpenSSHConfig="true" />
+    </configs>
+  </component>
+</project>

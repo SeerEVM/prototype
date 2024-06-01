@@ -25,7 +25,7 @@ import (
 	"github.com/holiman/uint256"
 )
 
-var activators = map[int]func(*JumpTable){
+var activators = map[int]func(*JumpTable, bool){
 	3855: enable3855,
 	3860: enable3860,
 	3529: enable3529,
@@ -40,12 +40,12 @@ var activators = map[int]func(*JumpTable){
 // EnableEIP enables the given EIP on the config.
 // This operation writes in-place, and callers need to ensure that the globally
 // defined jump tables are not polluted.
-func EnableEIP(eipNum int, jt *JumpTable) error {
+func EnableEIP(eipNum int, jt *JumpTable, isPreExecution bool) error {
 	enablerFn, ok := activators[eipNum]
 	if !ok {
 		return fmt.Errorf("undefined eip %d", eipNum)
 	}
-	enablerFn(jt)
+	enablerFn(jt, isPreExecution)
 	return nil
 }
 
@@ -67,15 +67,21 @@ func ActivateableEips() []string {
 // - Increase cost of EXTCODEHASH to 700
 // - Increase cost of SLOAD to 800
 // - Define SELFBALANCE, with cost GasFastStep (5)
-func enable1884(jt *JumpTable) {
+func enable1884(jt *JumpTable, isPreExecution bool) {
 	// Gas cost changes
 	jt[SLOAD].constantGas = params.SloadGasEIP1884
 	jt[BALANCE].constantGas = params.BalanceGasEIP1884
 	jt[EXTCODEHASH].constantGas = params.ExtcodeHashGasEIP1884
 
 	// New opcode
+	var execute executionFunc
+	if isPreExecution {
+		execute = popSelfBalance
+	} else {
+		execute = opSelfBalance
+	}
 	jt[SELFBALANCE] = &operation{
-		execute:     opSelfBalance,
+		execute:     execute,
 		constantGas: GasFastStep,
 		minStack:    minStack(0, 1),
 		maxStack:    maxStack(0, 1),
@@ -88,9 +94,17 @@ func opSelfBalance(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext)
 	return nil, nil
 }
 
+func popSelfBalance(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	balance, _ := uint256.FromBig(interpreter.evm.StateDB.GetBalance(scope.Contract.Address()))
+	scope.Stack.push(balance)
+	slotInt := new(uint256.Int).SetUint64(0)
+	scope.Stack.updateUnit(STATE, *slotInt, uint256.Int{}, *balance, uint256.Int{}, "SELFBALANCE", scope.Contract.Address())
+	return nil, nil
+}
+
 // enable1344 applies EIP-1344 (ChainID Opcode)
 // - Adds an opcode that returns the current chain’s EIP-155 unique identifier
-func enable1344(jt *JumpTable) {
+func enable1344(jt *JumpTable, isPreExecution bool) {
 	// New opcode
 	jt[CHAINID] = &operation{
 		execute:     opChainID,
@@ -108,14 +122,14 @@ func opChainID(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]
 }
 
 // enable2200 applies EIP-2200 (Rebalance net-metered SSTORE)
-func enable2200(jt *JumpTable) {
+func enable2200(jt *JumpTable, isPreExecution bool) {
 	jt[SLOAD].constantGas = params.SloadGasEIP2200
 	jt[SSTORE].dynamicGas = gasSStoreEIP2200
 }
 
 // enable2929 enables "EIP-2929: Gas cost increases for state access opcodes"
 // https://eips.ethereum.org/EIPS/eip-2929
-func enable2929(jt *JumpTable) {
+func enable2929(jt *JumpTable, isPreExecution bool) {
 	jt[SSTORE].dynamicGas = gasSStoreEIP2929
 
 	jt[SLOAD].constantGas = 0
@@ -155,17 +169,23 @@ func enable2929(jt *JumpTable) {
 // - Removes refunds for selfdestructs
 // - Reduces refunds for SSTORE
 // - Reduces max refunds to 20% gas
-func enable3529(jt *JumpTable) {
+func enable3529(jt *JumpTable, isPreExecution bool) {
 	jt[SSTORE].dynamicGas = gasSStoreEIP3529
 	jt[SELFDESTRUCT].dynamicGas = gasSelfdestructEIP3529
 }
 
 // enable3198 applies EIP-3198 (BASEFEE Opcode)
 // - Adds an opcode that returns the current block's base fee.
-func enable3198(jt *JumpTable) {
+func enable3198(jt *JumpTable, isPreExecution bool) {
 	// New opcode
+	var execute executionFunc
+	if isPreExecution {
+		execute = popBaseFee
+	} else {
+		execute = opBaseFee
+	}
 	jt[BASEFEE] = &operation{
-		execute:     opBaseFee,
+		execute:     execute,
 		constantGas: GasQuickStep,
 		minStack:    minStack(0, 1),
 		maxStack:    maxStack(0, 1),
@@ -175,7 +195,7 @@ func enable3198(jt *JumpTable) {
 // enable1153 applies EIP-1153 "Transient Storage"
 // - Adds TLOAD that reads from transient storage
 // - Adds TSTORE that writes to transient storage
-func enable1153(jt *JumpTable) {
+func enable1153(jt *JumpTable, isPreExecution bool) {
 	jt[TLOAD] = &operation{
 		execute:     opTload,
 		constantGas: params.WarmStorageReadCostEIP2929,
@@ -218,8 +238,17 @@ func opBaseFee(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]
 	return nil, nil
 }
 
+// popBaseFee pre-execution version
+func popBaseFee(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
+	baseFee, _ := uint256.FromBig(interpreter.evm.Context.BaseFee)
+	scope.Stack.push(baseFee)
+	slotInt := new(uint256.Int).SetUint64(0)
+	scope.Stack.updateUnit(STATE, *slotInt, uint256.Int{}, *baseFee, uint256.Int{}, "BASEFEE", common.Address{})
+	return nil, nil
+}
+
 // enable3855 applies EIP-3855 (PUSH0 opcode)
-func enable3855(jt *JumpTable) {
+func enable3855(jt *JumpTable, isPreExecution bool) {
 	// New opcode
 	jt[PUSH0] = &operation{
 		execute:     opPush0,
@@ -237,7 +266,7 @@ func opPush0(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]by
 
 // ebnable3860 enables "EIP-3860: Limit and meter initcode"
 // https://eips.ethereum.org/EIPS/eip-3860
-func enable3860(jt *JumpTable) {
+func enable3860(jt *JumpTable, isPreExecution bool) {
 	jt[CREATE].dynamicGas = gasCreateEip3860
 	jt[CREATE2].dynamicGas = gasCreate2Eip3860
 }

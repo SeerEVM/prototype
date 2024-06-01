@@ -12,7 +12,6 @@ import (
 	"prophetEVM/core/state/snapshot"
 	"prophetEVM/core/types"
 	"prophetEVM/trie"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -96,7 +95,7 @@ type ReadResult struct {
 
 func newReadResult() *ReadResult {
 	return &ReadResult{
-		Status:  -1,
+		Status:  READ_ERROR,
 		Version: &TxInfoMini{Index: -1, Incarnation: -1},
 		//DirtyState:   new(stateOperation),
 		//DirtyStorage: new(storageOperation),
@@ -235,36 +234,35 @@ func (s *IcseStateDB) Record(ver *TxInfoMini, readSet []*ReadLoc, writeSet Write
 
 // readStateVersion 给定一个storageVersion（快照版本号），如论文中描述，该交易只能读到不超过该版本的state数据
 func (s *IcseStateDB) readStateVersion(addr common.Address, storageVersion int) *ReadResult {
-	var txIndexes []int
 	res := newReadResult()
-
 	if obj := s.getDeletedStateObject(addr); obj != nil {
-		obj.multiVersionState.Range(func(key, value any) bool {
-			id := key.(int)
-			// find the maximum id smaller than storageVersion
-			if id < storageVersion {
-				txIndexes = append(txIndexes, id)
+		obj.mvStateMutex.Lock()
+		defer obj.mvStateMutex.Unlock()
+		// set the initial index to be -2 since -1 indicates the snapshot version
+		maxIndex := -2
+		ordered := obj.multiVersionState.ordered
+		for i := len(ordered) - 1; i >= 0; i-- {
+			if ordered[i] <= storageVersion {
+				maxIndex = ordered[i]
+				break
 			}
-			return true
-		})
+		}
 
-		// initially loads the snapshot state (initial version is set to -1)
-		if len(txIndexes) == 0 {
+		if maxIndex == -2 {
+			// initially loads the snapshot state (initial version is set to -1)
 			res.Status = NOT_FOUND
 			op := &stateOperation{
 				incarnation: -1,
 				account:     obj.data,
 			}
-			obj.multiVersionState.Store(-1, op)
+			obj.multiVersionState.ops[-1] = op
+			obj.multiVersionState.ordered = append(obj.multiVersionState.ordered, -1)
 			res.DirtyState = op
 			return res
 		}
 
-		sort.Ints(txIndexes)
-		maxIndex := txIndexes[len(txIndexes)-1]
-		v, _ := obj.multiVersionState.Load(maxIndex)
-		op := v.(*stateOperation)
-		if !op.account.deleted { // 这里还有第3种情况没有标明？
+		op := obj.multiVersionState.ops[maxIndex]
+		if !op.account.deleted {
 			res.Status = READ_OK
 		}
 		res.Version = &TxInfoMini{Index: maxIndex, Incarnation: op.incarnation}
@@ -276,7 +274,6 @@ func (s *IcseStateDB) readStateVersion(addr common.Address, storageVersion int) 
 
 // readStorageVersion reads the latest version at a specific storage slot
 func (s *IcseStateDB) readStorageVersion(addr common.Address, hash common.Hash, storageVersion int) *ReadResult {
-	var txIndexes []int
 	res := newReadResult()
 	// Tx that creates a contract account may be aborted after the first incarnation,
 	// it leads to that the account data in the corresponding object equals nil (fail to update writes).
@@ -294,80 +291,27 @@ func (s *IcseStateDB) readStorageVersion(addr common.Address, hash common.Hash, 
 				incarnation:  -1,
 				storageValue: value,
 			}
-			smap = make(slotMap)
-			smap[-1] = op
+			smap = &slotMap{
+				ops:     make(map[int]*storageOperation),
+				ordered: make([]int, 0, 2000),
+			}
+			smap.ops[-1] = op
+			smap.ordered = append(smap.ordered, -1)
 			obj.multiVersionStorage[hash] = smap
 			res.DirtyStorage = op
 			return res
 		}
 
-		for id := range smap {
-			if id < storageVersion {
-				txIndexes = append(txIndexes, id)
+		maxIndex := -2
+		for i := len(smap.ordered) - 1; i >= 0; i-- {
+			if smap.ordered[i] <= storageVersion {
+				maxIndex = smap.ordered[i]
+				break
 			}
 		}
 
-		if len(txIndexes) > 0 {
-			// 没有比当前交易还小的版本只存在于constructionStateDB（在构建图之前不会去读取这个db，因此不会存储-1的版本内容）
-			sort.Ints(txIndexes)
-			maxIndex := txIndexes[len(txIndexes)-1]
-			op := smap[maxIndex]
-			// if the latest version is aborted
-			res.Status = READ_OK
-
-			res.Version = &TxInfoMini{Index: maxIndex, Incarnation: op.incarnation}
-			res.DirtyStorage = op
-		}
-	}
-	// the status is -1 when the state object does not exist
-	return res
-}
-
-// readStateVersion2 checks whether exists a state version written by a specific tx with index (for abort check)
-func (s *IcseStateDB) readStateVersion2(addr common.Address, storageVersion int) *ReadResult {
-	res := newReadResult()
-	if obj := s.getDeletedStateObject(addr); obj != nil {
-		find := false
-		obj.multiVersionState.Range(func(key, value any) bool {
-			id := key.(int)
-			if id == storageVersion {
-				find = true
-				return false
-			}
-			return true
-		})
-
-		// initially loads the snapshot state (initial version is set to -1)
-		if !find {
-			res.Status = NOT_FOUND
-			op := &stateOperation{
-				incarnation: -1,
-				account:     obj.data,
-			}
-			obj.multiVersionState.Store(-1, op)
-			res.DirtyState = op
-			return res
-		}
-
-		v, _ := obj.multiVersionState.Load(storageVersion)
-		op := v.(*stateOperation)
-		if !op.account.deleted { // 这里还有第3种情况没有标明？
-			res.Status = READ_OK
-		}
-		res.Version = &TxInfoMini{Index: storageVersion, Incarnation: op.incarnation}
-		res.DirtyState = op
-	}
-	return res
-}
-
-// readStorageVersion2 checks whether exists a storage version written by a specific tx with index (for abort check)
-func (s *IcseStateDB) readStorageVersion2(addr common.Address, hash common.Hash, storageVersion int) *ReadResult {
-	res := newReadResult()
-	if obj := s.getDeletedStateObject(addr); obj != nil && obj.data.StateAccount != nil {
-		obj.mvStorageMutex.Lock()
-		defer obj.mvStorageMutex.Unlock()
-		smap, ok := obj.multiVersionStorage[hash]
-		if !ok {
+		// not found (in case some tx directly writes without reading the version)
+		if maxIndex == -2 {
 			// initially loads the snapshot storage (initial version is set to -1)
 			res.Status = NOT_FOUND
 			value := obj.GetCommittedState(s.db, hash)
@@ -375,51 +319,57 @@ func (s *IcseStateDB) readStorageVersion2(addr common.Address, hash common.Hash,
 				incarnation:  -1,
 				storageValue: value,
 			}
-			smap = make(slotMap)
-			smap[-1] = op
-			obj.multiVersionStorage[hash] = smap
+			smap.ops[-1] = op
+			smap.ordered = append([]int{-1}, smap.ordered[:]...)
 			res.DirtyStorage = op
 			return res
 		}
 
-		find := false
-		for id := range smap {
-			if id == storageVersion {
-				find = true
-				break
-			}
-		}
-
-		if find {
-			// 没有比当前交易还小的版本只存在于constructionStateDB（在构建图之前不会去读取这个db，因此不会存储-1的版本内容）
-			op := smap[storageVersion]
-			res.Status = READ_OK
-			res.Version = &TxInfoMini{Index: storageVersion, Incarnation: op.incarnation}
-			res.DirtyStorage = op
-		}
+		op := smap.ops[maxIndex]
+		res.Status = READ_OK
+		res.Version = &TxInfoMini{Index: maxIndex, Incarnation: op.incarnation}
+		res.DirtyStorage = op
 	}
+	// the status is -1 when the state object does not exist
 	return res
 }
 
+// checkStateVersion checks whether exists a state version written by a specific tx with index (for abort check)
+func (s *IcseStateDB) checkStateVersion(addr common.Address, storageVersion int) int {
+	if obj := s.getDeletedStateObject(addr); obj != nil {
+		obj.mvStateMutex.RLock()
+		defer obj.mvStateMutex.RUnlock()
+		length := len(obj.multiVersionState.ordered)
+		latestVersion := obj.multiVersionState.ordered[length-1]
+		return latestVersion
+	}
+	return storageVersion
+}
+
+// checkStorageVersion checks whether exists a storage version written by a specific tx with index (for abort check)
+func (s *IcseStateDB) checkStorageVersion(addr common.Address, hash common.Hash, storageVersion int) int {
+	if obj := s.getDeletedStateObject(addr); obj != nil && obj.data.StateAccount != nil {
+		obj.mvStorageMutex.RLock()
+		defer obj.mvStorageMutex.RUnlock()
+		smap := obj.multiVersionStorage[hash]
+		latestVersion := smap.ordered[len(smap.ordered)-1]
+		return latestVersion
+	}
+	return storageVersion
+}
+
 // ValidateReadSet validates if the current read set conflicts with other txs' write sets
-func (s *IcseStateDB) ValidateReadSet(lastReads []*ReadLoc, index int) bool {
+func (s *IcseStateDB) ValidateReadSet(lastReads []*ReadLoc, storageVersion, index int) bool {
 	for _, read := range lastReads {
-		var curRes *ReadResult
+		var curVersion int
 		if !read.Location.storageMarker {
-			curRes = s.readStateVersion(read.Location.stateAddress, index)
+			curVersion = s.checkStateVersion(read.Location.stateAddress, storageVersion)
 		} else {
-			curRes = s.readStorageVersion(read.Location.stateAddress, read.Location.storageSlot, index)
+			curVersion = s.checkStorageVersion(read.Location.stateAddress, read.Location.storageSlot, storageVersion)
 		}
-		// fmt.Printf("tx %+v的读操作\n%+v现在的状态是NOT_FOUND\n", read.Version, read.Location)
-		if curRes.Status == READ_OK && !curRes.Version.Compare(read.Version) {
-			//if PrintDetails {
-			//	fmt.Printf("tx {Index: %d Incarnation: %d}的读操作是读取版本%+v的位置{stateAddress: %s, storageSlot: %v, storageMarker: %v}已经被版本%+v所写\n", index, incarnation, read.Version, read.Location.stateAddress, read.Location.storageSlot, read.Location.storageMarker, curRes.Version)
-			//}
+		if read.Version.Index != curVersion {
 			return true
 		}
-		//if curRes.Status == READ_OK {
-		//	return true
-		//}
 	}
 	return false
 }
@@ -468,7 +418,8 @@ func (s *IcseStateDB) applyWrites(index, incarnation int, writeSets WriteSets) {
 		obj := s.getDeletedStateObject(addr)
 		// if the account is newly created in this block
 		if obj == nil {
-			obj = createStmStateObject(s, addr)
+			stateAccount := types.NewStateAccount(0, new(big.Int).SetInt64(0), types.EmptyRootHash, types.EmptyCodeHash.Bytes())
+			obj = newStmStateObject(s, addr, *stateAccount)
 			s.stateObjects.LoadOrStore(addr, obj)
 			if write.stateModified {
 				obj.setState(index, incarnation, write)

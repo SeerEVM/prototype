@@ -17,16 +17,16 @@
 package core
 
 import (
-	"github.com/ethereum/go-ethereum/ethdb"
-
 	"fmt"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/params"
 	"math/big"
 	"prophetEVM/core/state"
 	"prophetEVM/core/types"
 	"prophetEVM/core/vm"
+	"time"
 )
 
 // StateProcessor is a basic Processor, which takes care of transitioning
@@ -53,7 +53,7 @@ func NewStateProcessor(config *params.ChainConfig, chainDb ethdb.Database) *Stat
 // Process returns the receipts and logs accumulated during the process and
 // returns the amount of gas that was used in the process. If any of the
 // transactions failed to execute due to insufficient gas it will return an error.
-func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg vm.Config) (*common.Hash, *[]*types.AccessAddressMap, types.Receipts, []*types.Log, uint64, error) {
+func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg vm.Config, recorder *Recorder) (*common.Hash, *[]*types.AccessAddressMap, types.Receipts, []*types.Log, uint64, error) {
 	var (
 		receipts    types.Receipts
 		usedGas     = new(uint64)
@@ -65,7 +65,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	)
 
 	blockContext := NewEVMBlockContext(header, p.chainDb, nil)
-	vmenv := vm.NewEVM(blockContext, vm.TxContext{}, statedb, p.config, cfg, false)
+	vmenv := vm.NewEVM(blockContext, vm.TxContext{}, statedb, p.config, cfg, false, false, false)
 
 	txsAccessAddress := make([]*types.AccessAddressMap, 0)
 	// Iterate over and process the individual transactions
@@ -75,7 +75,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 			return nil, nil, nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 		}
 		statedb.SetTxContext(tx.Hash(), i)
-		receipt, err := applyTransaction(msg, p.config, gp, statedb, blockNumber, blockHash, tx, usedGas, vmenv)
+		receipt, err := applyTransaction(msg, p.config, gp, statedb, blockNumber, blockHash, tx, usedGas, vmenv, recorder)
 		if err != nil {
 			return nil, nil, nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 		}
@@ -104,15 +104,20 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	return &root, &txsAccessAddress, receipts, allLogs, *usedGas, nil
 }
 
-func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, statedb *state.StateDB, blockNumber *big.Int, blockHash common.Hash, tx *types.Transaction, usedGas *uint64, evm *vm.EVM) (*types.Receipt, error) {
+func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, statedb *state.StateDB, blockNumber *big.Int, blockHash common.Hash, tx *types.Transaction, usedGas *uint64, evm *vm.EVM, recorder *Recorder) (*types.Receipt, error) {
 	// Create a new context to be used in the EVM environment.
 	txContext := NewEVMTxContext(msg, common.Hash{}, &big.Int{})
 	evm.Reset(txContext, statedb)
 
+	s := time.Now()
 	// Apply the transaction to the current state (included in the env).
 	result, err := ApplyMessage(evm, msg, gp)
+	e := time.Since(s)
 	if err != nil {
 		return nil, err
+	}
+	if recorder != nil {
+		recorder.SerialRecord(tx, statedb, e.Microseconds())
 	}
 
 	// Update the state with pending changes.
@@ -153,6 +158,41 @@ func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, sta
 // reward. The total reward consists of the static block reward and rewards for
 // included uncles. The coinbase of each uncle block is also rewarded.
 func accumulateRewards(config *params.ChainConfig, state *state.StateDB, header *types.Header, uncles []*types.Header) {
+	// Ethash proof-of-work protocol constants.
+	var (
+		FrontierBlockReward       = big.NewInt(5e+18) // Block reward in wei for successfully mining a block
+		ByzantiumBlockReward      = big.NewInt(3e+18) // Block reward in wei for successfully mining a block upward from Byzantium
+		ConstantinopleBlockReward = big.NewInt(2e+18) // Block reward in wei for successfully mining a block upward from Constantinople
+
+		big8  = big.NewInt(8)
+		big32 = big.NewInt(32)
+	)
+
+	// Select the correct block reward based on chain progression
+	blockReward := FrontierBlockReward
+	if config.IsByzantium(header.Number) {
+		blockReward = ByzantiumBlockReward
+	}
+	if config.IsConstantinople(header.Number) {
+		blockReward = ConstantinopleBlockReward
+	}
+	// Accumulate the rewards for the miner and any included uncles
+	reward := new(big.Int).Set(blockReward)
+	r := new(big.Int)
+	for _, uncle := range uncles {
+		r.Add(uncle.Number, big8)
+		r.Sub(r, header.Number)
+		r.Mul(r, blockReward)
+		r.Div(r, big8)
+		state.AddBalance(uncle.Coinbase, r)
+
+		r.Div(blockReward, big32)
+		reward.Add(reward, r)
+	}
+	state.AddBalance(header.Coinbase, reward)
+}
+
+func accumulateRewards2(config *params.ChainConfig, state *state.IcseStateDB, header *types.Header, uncles []*types.Header) {
 	// Ethash proof-of-work protocol constants.
 	var (
 		FrontierBlockReward       = big.NewInt(5e+18) // Block reward in wei for successfully mining a block

@@ -6,8 +6,9 @@ import (
 )
 
 const (
-	NOT_FOUND = iota
-	READ_OK
+	READ_ERROR = -1
+	NOT_FOUND  = 0
+	READ_OK    = 1
 )
 
 type storedVers struct {

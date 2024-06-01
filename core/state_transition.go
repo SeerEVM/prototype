@@ -235,7 +235,7 @@ func (st *StateTransition) to() common.Address {
 	return *st.msg.To
 }
 
-func (st *StateTransition) buyGas(isPreExecution bool) error {
+func (st *StateTransition) buyGas() error {
 	mgval := new(big.Int).SetUint64(st.msg.GasLimit)
 	mgval = mgval.Mul(mgval, st.msg.GasPrice)
 	balanceCheck := mgval
@@ -253,16 +253,13 @@ func (st *StateTransition) buyGas(isPreExecution bool) error {
 	st.gasRemaining += st.msg.GasLimit
 
 	st.initialGas = st.msg.GasLimit
-	// 在预执行中不进行gas的扣除
-	if !isPreExecution {
-		st.balance = st.state.GetBalance(st.msg.From)
-		st.state.SubBalance(st.msg.From, mgval)
-	}
+	st.balance = st.state.GetBalance(st.msg.From)
+	st.state.SubBalance(st.msg.From, mgval)
 	st.preSubGas.Set(mgval) // 预扣除的手续费
 	return nil
 }
 
-func (st *StateTransition) preCheck(isPreExecution bool) error {
+func (st *StateTransition) preCheck() error {
 	// Only check transactions that are not fake
 	msg := st.msg
 	if !msg.SkipAccountChecks {
@@ -310,7 +307,7 @@ func (st *StateTransition) preCheck(isPreExecution bool) error {
 			//}
 		}
 	}
-	return st.buyGas(isPreExecution)
+	return st.buyGas()
 }
 
 // TransitionDb will transition the state by applying the current message and
@@ -335,7 +332,7 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 	// 6. caller has enough balance to cover asset transfer for **topmost** call
 
 	// Check clauses 1-3, buy gas if everything is correct
-	if err := st.preCheck(st.evm.IsPreExecution()); err != nil {
+	if err := st.preCheck(); err != nil {
 		return nil, err
 	}
 	// 是否需要退出
@@ -394,9 +391,7 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 		ret, _, st.gasRemaining, vmerr = st.evm.Create(sender, msg.Data, st.gasRemaining, msg.Value)
 	} else {
 		// Increment the nonce for the next transaction
-		if !st.evm.IsPreExecution() {
-			st.state.SetNonce(msg.From, st.state.GetNonce(sender.Address())+1)
-		}
+		st.state.SetNonce(msg.From, st.state.GetNonce(sender.Address())+1)
 		ret, st.gasRemaining, vmerr = st.evm.Call(sender, st.to(), msg.Data, st.gasRemaining, msg.Value)
 	}
 
@@ -420,9 +415,7 @@ func (st *StateTransition) TransitionDb() (*ExecutionResult, error) {
 		fee := new(big.Int).SetUint64(st.gasUsed())
 		fee.Mul(fee, effectiveTip)
 		// 矿工地址的手续费与区块奖励不予记录在读写集中
-		if !st.evm.IsPreExecution() {
-			st.state.AddBalance(st.evm.Context.Coinbase, fee)
-		}
+		st.state.AddBalance(st.evm.Context.Coinbase, fee)
 	}
 
 	return &ExecutionResult{
@@ -445,7 +438,7 @@ func (st *StateTransition) FastTransitionDb(remainingGas uint64, final *vm.Final
 	// 6. caller has enough balance to cover asset transfer for **topmost** call
 
 	// Check clauses 1-3, buy gas if everything is correct
-	if err := st.preCheck(st.evm.IsPreExecution()); err != nil {
+	if err := st.preCheck(); err != nil {
 		return nil, err
 	}
 	// 是否需要退出

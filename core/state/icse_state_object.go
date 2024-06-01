@@ -201,10 +201,9 @@ type stmStateObject struct { // 多版本的object
 	// Write caches.
 	trie Trie // storage trie, which becomes non-nil on first access
 
-	// map[int]*stateOperation 存储多版本的账户状态，事务id => 写⼊的账户状态  sync.Map[int]*stateOperation
-	multiVersionState sync.Map
-	//存储多版本的合约状态，合约变量地址（Hash） => (事务id => 写⼊的变量值 )
-	multiVersionStorage slotMaps
+	multiVersionState   *stateMap
+	multiVersionStorage map[common.Hash]*slotMap
+	mvStateMutex        sync.RWMutex
 	mvStorageMutex      sync.RWMutex
 
 	dirtyStorage StmStorage // StmStorage entries that have been modified in the current transaction execution
@@ -221,8 +220,15 @@ type storageOperation struct {
 	storageValue common.Hash
 }
 
-type slotMaps map[common.Hash]slotMap
-type slotMap map[int]*storageOperation
+type stateMap struct {
+	ops     map[int]*stateOperation
+	ordered []int // record the ordered version list
+}
+
+type slotMap struct {
+	ops     map[int]*storageOperation
+	ordered []int // record the ordered version list
+}
 
 // empty returns whether the account is considered empty.
 // 没有 或 最后一个为空
@@ -245,11 +251,15 @@ func newStmStateObject(db *IcseStateDB, address common.Address, data types.State
 	}
 
 	return &stmStateObject{
-		db:                  db,
-		address:             address,
-		addrHash:            crypto.Keccak256Hash(address[:]),
-		data:                newStateAccount(&data, db, crypto.Keccak256Hash(address[:])),
-		multiVersionStorage: make(slotMaps),
+		db:       db,
+		address:  address,
+		addrHash: crypto.Keccak256Hash(address[:]),
+		data:     newStateAccount(&data, db, crypto.Keccak256Hash(address[:])),
+		multiVersionState: &stateMap{
+			ops:     make(map[int]*stateOperation),
+			ordered: make([]int, 0, 5000),
+		},
+		multiVersionStorage: make(map[common.Hash]*slotMap),
 		dirtyStorage:        make(StmStorage),
 		dirtyMarker:         false,
 	}
@@ -257,11 +267,15 @@ func newStmStateObject(db *IcseStateDB, address common.Address, data types.State
 
 func createStmStateObject(db *IcseStateDB, address common.Address) *stmStateObject {
 	return &stmStateObject{
-		db:                  db,
-		address:             address,
-		addrHash:            crypto.Keccak256Hash(address[:]),
-		data:                new(SStateAccount),
-		multiVersionStorage: make(slotMaps),
+		db:       db,
+		address:  address,
+		addrHash: crypto.Keccak256Hash(address[:]),
+		data:     new(SStateAccount),
+		multiVersionState: &stateMap{
+			ops:     make(map[int]*stateOperation),
+			ordered: make([]int, 0, 5000),
+		},
+		multiVersionStorage: make(map[common.Hash]*slotMap),
 		dirtyStorage:        make(StmStorage),
 		dirtyMarker:         false,
 	}
@@ -313,11 +327,15 @@ func (s *stmStateObject) getTrie(db Database) (Trie, error) {
 
 // setState stores the written state account data into MVMemory
 func (s *stmStateObject) setState(index, incarnation int, writeSet *WriteSet) {
+	s.mvStateMutex.Lock()
+	defer s.mvStateMutex.Unlock()
 	op := &stateOperation{
 		incarnation: incarnation,
 		account:     writeSet.Account,
 	}
-	s.multiVersionState.Store(index, op)
+	s.multiVersionState.ops[index] = op
+	s.multiVersionState.ordered = append(s.multiVersionState.ordered, index)
+	sort.Ints(s.multiVersionState.ordered)
 }
 
 // setStorage stores the written storage slots into MVMemory
@@ -329,13 +347,18 @@ func (s *stmStateObject) setStorage(index, incarnation int, writeSet *WriteSet) 
 			incarnation:  incarnation,
 			storageValue: value,
 		}
-		var smap slotMap
+		var smap *slotMap
 		if v, ok := s.multiVersionStorage[key]; !ok {
-			smap = make(slotMap)
+			smap = &slotMap{
+				ops:     make(map[int]*storageOperation),
+				ordered: make([]int, 0, 2000),
+			}
 		} else {
 			smap = v
 		}
-		smap[index] = op
+		smap.ops[index] = op
+		smap.ordered = append(smap.ordered, index)
+		sort.Ints(smap.ordered)
 		s.multiVersionStorage[key] = smap
 	}
 }
@@ -393,48 +416,46 @@ func (s *stmStateObject) GetCommittedState(db Database, key common.Hash) common.
 
 // updateAccount updates the latest version of account data
 func (s *stmStateObject) updateAccount() {
-	var txIndexes []int
-	s.multiVersionState.Range(func(key, value any) bool {
-		id := key.(int)
-		txIndexes = append(txIndexes, id)
-		return true
-	})
-	sort.Sort(sort.Reverse(sort.IntSlice(txIndexes)))
-
-	for _, index := range txIndexes {
-		if index > -1 {
-			v, _ := s.multiVersionState.Load(index)
-			latestOp := v.(*stateOperation)
-			s.dirtyMarker = true
-			s.data = latestOp.account
+	latestVer := -1
+	ordered := s.multiVersionState.ordered
+	for i := len(ordered) - 1; i >= 0; i-- {
+		if _, ok := s.multiVersionState.ops[ordered[i]]; ok {
+			latestVer = ordered[i]
 			break
 		}
+	}
+	if latestVer > -1 {
+		s.data = s.multiVersionState.ops[latestVer].account
+		s.dirtyMarker = true
+	}
+	// clear the multi-version state
+	s.multiVersionState = &stateMap{
+		ops:     make(map[int]*stateOperation),
+		ordered: make([]int, 0, 5000),
 	}
 }
 
 // updateAccount updates the latest version of value for each dirty storage slot
 func (s *stmStateObject) updateStorage() {
 	for address, smap := range s.multiVersionStorage {
-		var txIndexes []int
-		for index := range smap {
-			txIndexes = append(txIndexes, index)
-		}
-		sort.Sort(sort.Reverse(sort.IntSlice(txIndexes)))
-
-		for _, index := range txIndexes {
-			if index > -1 {
-				// index equals -1 indicates that the slot has not been modified,
-				// with the snapshot value committed in the last block height
-				latestValue := smap[index].storageValue
-				s.dirtyStorage[address] = latestValue
+		latestVer := -1
+		for i := len(smap.ordered) - 1; i >= 0; i-- {
+			if _, ok := smap.ops[smap.ordered[i]]; ok {
+				latestVer = smap.ordered[i]
 				break
 			}
+		}
+		if latestVer > -1 {
+			latestValue := smap.ops[latestVer].storageValue
+			s.dirtyStorage[address] = latestValue
 		}
 	}
 
 	if len(s.dirtyStorage) > 0 {
 		s.dirtyMarker = true
 	}
+	// clear the multi-version storage
+	s.multiVersionStorage = make(map[common.Hash]*slotMap)
 }
 
 // finalise moves all dirty storage slots into the pending area to be hashed or

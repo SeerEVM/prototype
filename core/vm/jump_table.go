@@ -18,7 +18,6 @@ package vm
 
 import (
 	"fmt"
-
 	"github.com/ethereum/go-ethereum/params"
 )
 
@@ -81,15 +80,21 @@ func validate(jt JumpTable) JumpTable {
 
 func newShanghaiInstructionSet(isPreExecution bool) JumpTable {
 	instructionSet := newMergeInstructionSet(isPreExecution)
-	enable3855(&instructionSet) // PUSH0 instruction
-	enable3860(&instructionSet) // Limit and meter initcode
+	enable3855(&instructionSet, isPreExecution) // PUSH0 instruction
+	enable3860(&instructionSet, isPreExecution) // Limit and meter initcode
 	return validate(instructionSet)
 }
 
 func newMergeInstructionSet(isPreExecution bool) JumpTable {
 	instructionSet := newLondonInstructionSet(isPreExecution)
+	var execute executionFunc
+	if isPreExecution {
+		execute = popRandom
+	} else {
+		execute = opRandom
+	}
 	instructionSet[PREVRANDAO] = &operation{
-		execute:     opRandom,
+		execute:     execute,
 		constantGas: GasQuickStep,
 		minStack:    minStack(0, 1),
 		maxStack:    maxStack(0, 1),
@@ -101,8 +106,8 @@ func newMergeInstructionSet(isPreExecution bool) JumpTable {
 // constantinople, istanbul, petersburg, berlin and london instructions.
 func newLondonInstructionSet(isPreExecution bool) JumpTable {
 	instructionSet := newBerlinInstructionSet(isPreExecution)
-	enable3529(&instructionSet) // EIP-3529: Reduction in refunds https://eips.ethereum.org/EIPS/eip-3529
-	enable3198(&instructionSet) // Base fee opcode https://eips.ethereum.org/EIPS/eip-3198
+	enable3529(&instructionSet, isPreExecution) // EIP-3529: Reduction in refunds https://eips.ethereum.org/EIPS/eip-3529
+	enable3198(&instructionSet, isPreExecution) // Base fee opcode https://eips.ethereum.org/EIPS/eip-3198
 	return validate(instructionSet)
 }
 
@@ -110,7 +115,7 @@ func newLondonInstructionSet(isPreExecution bool) JumpTable {
 // constantinople, istanbul, petersburg and berlin instructions.
 func newBerlinInstructionSet(isPreExecution bool) JumpTable {
 	instructionSet := newIstanbulInstructionSet(isPreExecution)
-	enable2929(&instructionSet) // Access lists for trie accesses https://eips.ethereum.org/EIPS/eip-2929
+	enable2929(&instructionSet, isPreExecution) // Access lists for trie accesses https://eips.ethereum.org/EIPS/eip-2929
 	return validate(instructionSet)
 }
 
@@ -119,9 +124,9 @@ func newBerlinInstructionSet(isPreExecution bool) JumpTable {
 func newIstanbulInstructionSet(isPreExecution bool) JumpTable {
 	instructionSet := newConstantinopleInstructionSet(isPreExecution)
 
-	enable1344(&instructionSet) // ChainID opcode - https://eips.ethereum.org/EIPS/eip-1344
-	enable1884(&instructionSet) // Reprice reader opcodes - https://eips.ethereum.org/EIPS/eip-1884
-	enable2200(&instructionSet) // Net metered SSTORE - https://eips.ethereum.org/EIPS/eip-2200
+	enable1344(&instructionSet, isPreExecution) // ChainID opcode - https://eips.ethereum.org/EIPS/eip-1344
+	enable1884(&instructionSet, isPreExecution) // Reprice reader opcodes - https://eips.ethereum.org/EIPS/eip-1884
+	enable2200(&instructionSet, isPreExecution) // Net metered SSTORE - https://eips.ethereum.org/EIPS/eip-2200
 
 	return validate(instructionSet)
 }
@@ -1116,7 +1121,11 @@ func newFrontierInstructionSet(isPreExecution bool) JumpTable {
 	// Fill all unassigned slots with opUndefined.
 	for i, entry := range tbl {
 		if entry == nil {
-			tbl[i] = &operation{execute: opUndefined, maxStack: maxStack(0, 0)}
+			if isPreExecution {
+				tbl[i] = &operation{execute: popUndefined, maxStack: maxStack(0, 0)}
+			} else {
+				tbl[i] = &operation{execute: opUndefined, maxStack: maxStack(0, 0)}
+			}
 		}
 	}
 

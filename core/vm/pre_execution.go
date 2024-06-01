@@ -4,11 +4,13 @@ import (
 	"errors"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/holiman/uint256"
+	"sync"
 )
 
 // PreExecutionTable stores necessary information of a pre-executed tx for subsequent actual execution
 type PreExecutionTable struct {
 	Space map[common.Hash]*Result
+	Mutex sync.RWMutex
 }
 
 func NewPreExecutionTable() *PreExecutionTable {
@@ -25,6 +27,8 @@ func (pe *PreExecutionTable) InitialResult(txID common.Hash) *Result {
 
 // GetResult obtains the pre-executed results for a specific transaction
 func (pe *PreExecutionTable) GetResult(txID common.Hash) (*Result, error) {
+	pe.Mutex.RLock()
+	defer pe.Mutex.RUnlock()
 	result, ok := pe.Space[txID]
 	if !ok {
 		return nil, errors.New("cannot find pre-execution info")
@@ -90,6 +94,12 @@ func (rs *Result) Reset(loc1, depth int, pc uint64) {
 			delete(rs.callStack, dep)
 		}
 	}
+}
+
+// InitialBranch initials a new branch context (used in non-checkpoint version)
+func (rs *Result) InitialBranch() {
+	ctx := initializeBranchContext()
+	rs.branchCtx = append(rs.branchCtx, ctx)
 }
 
 // CacheSStoreInfo stores sstore information and adds to the latest branch context (has not been filled with branch information)
@@ -173,7 +183,7 @@ func (rs *Result) GenerateFinalSnapshot(result []byte, gas uint64, err error) {
 }
 
 // UpdateBranchInfo updates branch info when encountering branch relevant to state variables
-func (rs *Result) UpdateBranchInfo(contractAddr common.Address, sUnit *StateUnit, cUnit TracingUnit, isVar, direction bool, id, judgement string) {
+func (rs *Result) UpdateBranchInfo(contractAddr common.Address, sUnit, cUnit TracingUnit, isVar, direction bool, id, judgement string) {
 	latestCtx := rs.branchCtx[len(rs.branchCtx)-1]
 	latestCtx.addBranchInfo(contractAddr, sUnit, cUnit, isVar, direction, id, judgement)
 }
@@ -186,15 +196,17 @@ func (rs *Result) UpdateDirection(res int) {
 
 // OutputRWSet outputs all cached read/write sets during pre-execution
 func (rs *Result) OutputRWSet() (ReadSet, WriteSet) {
-	var finalRSet ReadSet
-	var finalWSet WriteSet
+	var finalRSet = make(map[common.Address]*Recorder)
+	var finalWSet = make(map[common.Address]*Recorder)
 	for _, ctx := range rs.branchCtx {
 		CombineRWSet(finalRSet, ctx.readSet)
 		CombineRWSet(finalWSet, ctx.writeSet)
 	}
-	readSet, writeSet := rs.finalSnapshot.GetRWSet()
-	CombineRWSet(finalRSet, readSet)
-	CombineRWSet(finalWSet, writeSet)
+	if rs.finalSnapshot != nil {
+		readSet, writeSet := rs.finalSnapshot.GetRWSet()
+		CombineRWSet(finalRSet, readSet)
+		CombineRWSet(finalWSet, writeSet)
+	}
 	return finalRSet, finalWSet
 }
 
@@ -229,7 +241,7 @@ func (fs *FinalSnapshot) GetRWSet() (ReadSet, WriteSet) { return fs.readSet, fs.
 type BranchContext struct {
 	branchID     string
 	contractAddr common.Address // the initial caller contract address
-	sUnit        *StateUnit
+	sUnit        TracingUnit
 	cUnit        TracingUnit
 	judgement    string
 	isVar        bool
@@ -254,7 +266,7 @@ func initializeBranchContext() *BranchContext {
 
 func (bc *BranchContext) GetBranchID() string           { return bc.branchID }
 func (bc *BranchContext) GetAddr() common.Address       { return bc.contractAddr }
-func (bc *BranchContext) GetStateUnit() *StateUnit      { return bc.sUnit }
+func (bc *BranchContext) GetStateUnit() TracingUnit     { return bc.sUnit }
 func (bc *BranchContext) GetTracingUnit() TracingUnit   { return bc.cUnit }
 func (bc *BranchContext) IsVar() bool                   { return bc.isVar }
 func (bc *BranchContext) GetJudgement() string          { return bc.judgement }
@@ -263,8 +275,9 @@ func (bc *BranchContext) GetSstoreInfo() []*SstoreInfo  { return bc.sstoreInfo }
 func (bc *BranchContext) GetRWSet() (ReadSet, WriteSet) { return bc.readSet, bc.writeSet }
 func (bc *BranchContext) GetBranchDirection() bool      { return bc.isTaken }
 func (bc *BranchContext) GetJudgementDirection() bool   { return bc.direction }
+func (bc *BranchContext) GetFilled() bool               { return bc.isFilled }
 
-func (bc *BranchContext) addBranchInfo(contractAddr common.Address, sUnit *StateUnit, cUnit TracingUnit, isVar, direction bool, id, judgement string) {
+func (bc *BranchContext) addBranchInfo(contractAddr common.Address, sUnit, cUnit TracingUnit, isVar, direction bool, id, judgement string) {
 	bc.branchID = id
 	bc.contractAddr = contractAddr
 	bc.sUnit = sUnit
@@ -289,7 +302,7 @@ func (bc *BranchContext) updateSStoreInfo(contractAddr common.Address, updatedVa
 }
 
 func (bc *BranchContext) updateSnapshot(stack StackInterface, memory *Memory, pc, jumpPc uint64, contract *Contract, depth int) *Snapshot {
-	newSnapshot := createSnapShot(stack, memory, pc, jumpPc, contract, depth)
+	newSnapshot := createSnapShot(stack.copy(true), stack.copy(false), memory.Copy(), pc, jumpPc, contract.Copy(), depth)
 	bc.snapshots = append(bc.snapshots, newSnapshot)
 	return newSnapshot
 }
@@ -300,9 +313,10 @@ func (bc *BranchContext) addReadRecord(callerAddr common.Address, slot *common.H
 		rd = newRecorder(callerAddr)
 		bc.readSet[callerAddr] = rd
 	}
-	rd.markAccessedState()
 	if slot != nil {
 		rd.markAccessedStorage(*slot)
+	} else {
+		rd.markAccessedState()
 	}
 }
 
@@ -312,40 +326,44 @@ func (bc *BranchContext) addWriteRecord(callerAddr common.Address, slot *common.
 		rd = newRecorder(callerAddr)
 		bc.writeSet[callerAddr] = rd
 	}
-	rd.markAccessedState()
 	if slot != nil {
 		rd.markAccessedStorage(*slot)
+	} else {
+		rd.markAccessedState()
 	}
 }
 
 // Snapshot creates a tmp snapshot of current execution stack and relevant information
 type Snapshot struct {
-	curStack  StackInterface
-	curMemory *Memory
-	pc        uint64
-	jumpPc    uint64 // for tracking jumpi pos value in 'eq' judgement
-	contract  *Contract
-	depth     int
+	curTracingStack StackInterface
+	curStack        StackInterface
+	curMemory       *Memory
+	pc              uint64
+	jumpPc          uint64 // for tracking jumpi pos value in 'eq' judgement
+	contract        *Contract
+	depth           int
 }
 
-func createSnapShot(stack StackInterface, memory *Memory, pc, jumpPc uint64, contract *Contract, depth int) *Snapshot {
+func createSnapShot(tracingStack, stack StackInterface, memory *Memory, pc, jumpPc uint64, contract *Contract, depth int) *Snapshot {
 	return &Snapshot{
-		curStack:  stack,
-		curMemory: memory,
-		pc:        pc,
-		jumpPc:    jumpPc,
-		contract:  contract,
-		depth:     depth,
+		curTracingStack: tracingStack,
+		curStack:        stack,
+		curMemory:       memory,
+		pc:              pc,
+		jumpPc:          jumpPc,
+		contract:        contract,
+		depth:           depth,
 	}
 }
 
-func (sp *Snapshot) UpdatePC(pc uint64)       { sp.pc = pc }
-func (sp *Snapshot) GetStack() StackInterface { return sp.curStack }
-func (sp *Snapshot) GetMemory() *Memory       { return sp.curMemory }
-func (sp *Snapshot) GetPC() uint64            { return sp.pc }
-func (sp *Snapshot) GetJumpPC() uint64        { return sp.jumpPc }
-func (sp *Snapshot) GetContract() *Contract   { return sp.contract }
-func (sp *Snapshot) GetDepth() int            { return sp.depth }
+func (sp *Snapshot) UpdatePC(pc uint64)              { sp.pc = pc }
+func (sp *Snapshot) GetTracingStack() StackInterface { return sp.curTracingStack }
+func (sp *Snapshot) GetStack() StackInterface        { return sp.curStack }
+func (sp *Snapshot) GetMemory() *Memory              { return sp.curMemory }
+func (sp *Snapshot) GetPC() uint64                   { return sp.pc }
+func (sp *Snapshot) GetJumpPC() uint64               { return sp.jumpPc }
+func (sp *Snapshot) GetContract() *Contract          { return sp.contract }
+func (sp *Snapshot) GetDepth() int                   { return sp.depth }
 
 // SstoreInfo records the updated variable under the current snapshot
 type SstoreInfo struct {

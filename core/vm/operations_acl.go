@@ -32,7 +32,8 @@ func makeGasSStoreFunc(clearingRefund uint64) gasFunc {
 		}
 		// Gas sentry honoured, do the actual gas calculation based on the stored value
 		var (
-			y, x    = stack.Back(1), stack.peek()
+			y       = stack.Back(1)
+			x, _    = stack.peek()
 			slot    = common.Hash(x.Bytes32())
 			current = evm.StateDB.GetState(contract.Address(), slot)
 			cost    = uint64(0)

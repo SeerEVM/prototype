@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/holiman/uint256"
 )
 
@@ -10,6 +11,7 @@ type TracingUnit interface {
 	GetLabel() int
 	GetOffset() uint256.Int
 	SetValue(value uint256.Int)
+	Copy() TracingUnit
 }
 
 const (
@@ -60,7 +62,7 @@ func (nu *NormalUnit) SetBits(bits int) {
 	nu.bits = bits
 }
 
-func (nu *NormalUnit) Copy() *NormalUnit {
+func (nu *NormalUnit) Copy() TracingUnit {
 	return &NormalUnit{
 		curVal:   nu.curVal,
 		label:    NORMAL,
@@ -96,7 +98,7 @@ func (cu *CallDataUnit) SetValue(value uint256.Int) {
 	cu.curVal = value
 }
 
-func (cu *CallDataUnit) Copy() *CallDataUnit {
+func (cu *CallDataUnit) Copy() TracingUnit {
 	return &CallDataUnit{
 		inputVal: cu.inputVal,
 		curVal:   cu.curVal,
@@ -107,14 +109,17 @@ func (cu *CallDataUnit) Copy() *CallDataUnit {
 
 // StateUnit defines a unit representing the value of a state variable on the stack
 type StateUnit struct {
-	slot       uint256.Int
-	storageVal uint256.Int
-	offset     uint256.Int
-	curVal     uint256.Int
-	bits       int
-	opTracer   []*opcodesTracer
-	label      int
-	signExtend bool
+	slot           uint256.Int
+	storageVal     uint256.Int
+	offset         uint256.Int
+	curVal         uint256.Int
+	blockNum       uint256.Int
+	bits           int
+	opTracer       []*opcodesTracer
+	label          int
+	blockEnv       string // indicates if the variable is related to the current block environment
+	signExtend     bool
+	getBalanceAddr common.Address // record the queried (balance) contract address in a branch condition
 }
 
 type opcodesTracer struct {
@@ -143,17 +148,20 @@ func newOpcodesTracer(op string, val uint256.Int, direction bool, label int, uni
 	}
 }
 
-func NewStateUnit(slot, storageVal uint256.Int) *StateUnit {
+func NewStateUnit(slot, storageVal, blockNum uint256.Int, blockEnv string, balAddr common.Address) *StateUnit {
 	var offset uint256.Int
 	return &StateUnit{
-		slot:       slot,
-		storageVal: storageVal,
-		offset:     *offset.SetUint64(0),
-		curVal:     storageVal,
-		bits:       256,
-		opTracer:   make([]*opcodesTracer, 0, 100),
-		label:      STATE,
-		signExtend: false,
+		slot:           slot,
+		storageVal:     storageVal,
+		offset:         *offset.SetUint64(0),
+		curVal:         storageVal,
+		blockNum:       blockNum,
+		bits:           256,
+		opTracer:       make([]*opcodesTracer, 0, 100),
+		label:          STATE,
+		blockEnv:       blockEnv,
+		signExtend:     false,
+		getBalanceAddr: balAddr,
 	}
 }
 
@@ -161,10 +169,13 @@ func (su *StateUnit) GetSlot() uint256.Int         { return su.slot }
 func (su *StateUnit) GetValue() uint256.Int        { return su.curVal }
 func (su *StateUnit) GetLabel() int                { return su.label }
 func (su *StateUnit) GetStorageValue() uint256.Int { return su.storageVal }
+func (su *StateUnit) GetBlockNum() uint256.Int     { return su.blockNum }
 func (su *StateUnit) GetBits() int                 { return su.bits }
 func (su *StateUnit) GetOffset() uint256.Int       { return su.offset }
 func (su *StateUnit) GetTracer() []*opcodesTracer  { return su.opTracer }
+func (su *StateUnit) GetBlockEnv() string          { return su.blockEnv }
 func (su *StateUnit) GetSignExtend() bool          { return su.signExtend }
+func (su *StateUnit) GetBalAddr() common.Address   { return su.getBalanceAddr }
 
 func (su *StateUnit) SetValue(value uint256.Int) {
 	su.curVal = value
@@ -198,21 +209,29 @@ func (su *StateUnit) Record(op string, val uint256.Int, direction bool, label in
 }
 
 func (su *StateUnit) DeleteLastOp() {
-	su.opTracer = su.opTracer[:len(su.opTracer)-1]
+	if len(su.opTracer) > 0 {
+		su.opTracer = su.opTracer[:len(su.opTracer)-1]
+	}
 }
 
 func (su *StateUnit) ClearTracer() {
 	su.opTracer = make([]*opcodesTracer, 0, 100)
 }
 
-func (su *StateUnit) Copy() *StateUnit {
-	return &StateUnit{
-		slot:       su.slot,
-		storageVal: su.storageVal,
-		bits:       su.bits,
-		offset:     su.offset,
-		curVal:     su.curVal,
-		opTracer:   su.opTracer,
-		label:      STATE,
+func (su *StateUnit) Copy() TracingUnit {
+	copiedSUnit := &StateUnit{
+		slot:           su.slot,
+		storageVal:     su.storageVal,
+		bits:           su.bits,
+		offset:         su.offset,
+		curVal:         su.curVal,
+		blockNum:       su.blockNum,
+		opTracer:       make([]*opcodesTracer, len(su.opTracer)),
+		label:          STATE,
+		blockEnv:       su.blockEnv,
+		signExtend:     su.signExtend,
+		getBalanceAddr: su.getBalanceAddr,
 	}
+	copy(copiedSUnit.opTracer, su.opTracer)
+	return copiedSUnit
 }

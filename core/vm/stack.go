@@ -17,6 +17,7 @@
 package vm
 
 import (
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/holiman/uint256"
 	"sync"
 )
@@ -28,14 +29,15 @@ type StackInterface interface {
 	swap(n int)
 	dup(n int)
 	Back(n int) *uint256.Int
-	len() int
+	len(isData bool) int
 	Data() []uint256.Int
 	returnStack()
 	override(tu TracingUnit)
-	updateUnit(t int, slot, offset, val uint256.Int) *StateUnit
+	updateUnit(t int, slot, offset, val, blockNum uint256.Int, blockEnv string, balAddr common.Address) *StateUnit
 	BitLen(loc int) int
 	Tracer() []TracingUnit
 	UpdatePeek(e uint256.Int)
+	copy(stackTracing bool) StackInterface
 }
 
 var stackPool = sync.Pool{
@@ -52,12 +54,13 @@ type Stack struct {
 }
 
 func newstack() *Stack {
-	return stackPool.Get().(*Stack)
+	//return stackPool.Get().(*Stack)
+	return &Stack{data: make([]uint256.Int, 0, 16)}
 }
 
 func (st *Stack) returnStack() {
 	st.data = st.data[:0]
-	stackPool.Put(st)
+	//stackPool.Put(st)
 }
 
 // Data returns the underlying uint256.Int array.
@@ -71,45 +74,55 @@ func (st *Stack) push(d *uint256.Int) {
 }
 
 func (st *Stack) pop() (uint256.Int, TracingUnit) {
-	ret := st.data[len(st.data)-1]
-	st.data = st.data[:len(st.data)-1]
+	ret := st.data[st.len(true)-1]
+	st.data = st.data[:st.len(true)-1]
 	return ret, nil
 }
 
-func (st *Stack) len() int {
+func (st *Stack) len(isData bool) int {
 	return len(st.data)
 }
 
 func (st *Stack) swap(n int) {
-	st.data[st.len()-n], st.data[st.len()-1] = st.data[st.len()-1], st.data[st.len()-n]
+	st.data[st.len(true)-n], st.data[st.len(true)-1] = st.data[st.len(true)-1], st.data[st.len(true)-n]
 }
 
 func (st *Stack) dup(n int) {
-	st.push(&st.data[st.len()-n])
+	st.push(&st.data[st.len(true)-n])
 }
 
 func (st *Stack) peek() (*uint256.Int, TracingUnit) {
-	return &st.data[st.len()-1], nil
+	return &st.data[st.len(true)-1], nil
 }
 
 func (st *Stack) Tracer() []TracingUnit {
 	return []TracingUnit{}
 }
 
-func (st *Stack) updateUnit(t int, slot, offset, val uint256.Int) *StateUnit {
+func (st *Stack) updateUnit(t int, slot, offset, val, blockNum uint256.Int, blockEnv string, balAddr common.Address) *StateUnit {
 	return nil
 }
 
 // UpdatePeek updates the value of the peek unit
 func (st *Stack) UpdatePeek(e uint256.Int) {
-	st.data[st.len()-1] = e
+	if st.len(true) > 0 {
+		st.data[st.len(true)-1] = e
+	}
+}
+
+func (st *Stack) copy(stackTracing bool) StackInterface {
+	newStack := &Stack{
+		data: make([]uint256.Int, len(st.data)),
+	}
+	copy(newStack.data, st.data)
+	return newStack
 }
 
 func (st *Stack) override(tu TracingUnit) {}
 
 // Back returns the n'th item in stack
 func (st *Stack) Back(n int) *uint256.Int {
-	return &st.data[st.len()-n-1]
+	return &st.data[st.len(true)-n-1]
 }
 
 func (st *Stack) BitLen(loc int) int {
@@ -133,13 +146,17 @@ type PreStack struct {
 }
 
 func newPreStack() *PreStack {
-	return stackPool2.Get().(*PreStack)
+	//return stackPool2.Get().(*PreStack)
+	return &PreStack{
+		data:   make([]uint256.Int, 0, 16),
+		tracer: make([]TracingUnit, 0, 16),
+	}
 }
 
 func (ps *PreStack) returnStack() {
 	ps.data = ps.data[:0]
 	ps.tracer = ps.tracer[:0]
-	stackPool.Put(ps)
+	//stackPool2.Put(ps)
 }
 
 // Data returns the underlying uint256.Int array.
@@ -153,8 +170,8 @@ func (ps *PreStack) Tracer() []TracingUnit {
 
 // UpdatePeek updates the value of the peek unit
 func (ps *PreStack) UpdatePeek(e uint256.Int) {
-	ps.data[ps.len()-1] = e
-	ps.tracer[ps.len()-1].SetValue(e)
+	ps.data[ps.len(true)-1] = e
+	ps.tracer[ps.len(false)-1].SetValue(e)
 }
 
 func (ps *PreStack) push(d *uint256.Int) {
@@ -166,27 +183,30 @@ func (ps *PreStack) push(d *uint256.Int) {
 }
 
 func (ps *PreStack) pop() (uint256.Int, TracingUnit) {
-	reData := ps.data[len(ps.data)-1]
-	reUnit := ps.tracer[len(ps.data)-1]
-	ps.data = ps.data[:len(ps.data)-1]
-	ps.tracer = ps.tracer[:len(ps.tracer)-1]
+	reData := ps.data[ps.len(true)-1]
+	reUnit := ps.tracer[ps.len(false)-1]
+	ps.data = ps.data[:ps.len(true)-1]
+	ps.tracer = ps.tracer[:ps.len(false)-1]
 	return reData, reUnit
 }
 
-func (ps *PreStack) len() int {
-	return len(ps.data)
+func (ps *PreStack) len(isData bool) int {
+	if isData {
+		return len(ps.data)
+	}
+	return len(ps.tracer)
 }
 
 func (ps *PreStack) swap(n int) {
-	ps.data[ps.len()-n], ps.data[ps.len()-1] = ps.data[ps.len()-1], ps.data[ps.len()-n]
-	ps.tracer[ps.len()-n], ps.tracer[ps.len()-1] = ps.tracer[ps.len()-1], ps.tracer[ps.len()-n]
+	ps.data[ps.len(true)-n], ps.data[ps.len(true)-1] = ps.data[ps.len(true)-1], ps.data[ps.len(true)-n]
+	ps.tracer[ps.len(false)-n], ps.tracer[ps.len(false)-1] = ps.tracer[ps.len(false)-1], ps.tracer[ps.len(false)-n]
 }
 
 func (ps *PreStack) dup(n int) {
 	//st.push(&st.data[st.len()-n])
-	d := ps.data[ps.len()-n]
+	d := ps.data[ps.len(true)-n]
 	ps.data = append(ps.data, d)
-	tu := ps.tracer[ps.len()-n]
+	tu := ps.tracer[ps.len(false)-n]
 	switch unit := tu.(type) {
 	case *NormalUnit:
 		newUnit := unit.Copy()
@@ -201,31 +221,49 @@ func (ps *PreStack) dup(n int) {
 }
 
 func (ps *PreStack) peek() (*uint256.Int, TracingUnit) {
-	return &ps.data[ps.len()-1], ps.tracer[ps.len()-1]
+	return &ps.data[ps.len(true)-1], ps.tracer[ps.len(false)-1]
 }
 
-func (ps *PreStack) updateUnit(t int, slot, offset, val uint256.Int) *StateUnit {
+func (ps *PreStack) updateUnit(t int, slot, offset, val, blockNum uint256.Int, blockEnv string, balAddr common.Address) *StateUnit {
 	switch t {
 	case INPUT:
 		cu := NewCallDataUnit(val, offset)
-		ps.tracer[ps.len()-1] = cu
+		ps.tracer[ps.len(false)-1] = cu
 		return nil
 	case STATE:
-		su := NewStateUnit(slot, val)
-		ps.tracer[ps.len()-1] = su
+		su := NewStateUnit(slot, val, blockNum, blockEnv, balAddr)
+		ps.tracer[ps.len(false)-1] = su
 		return su
 	default:
 		return nil
 	}
 }
 
+func (ps *PreStack) copy(stackTracing bool) StackInterface {
+	if stackTracing {
+		newStack := &PreStack{
+			data:   make([]uint256.Int, len(ps.data)),
+			tracer: make([]TracingUnit, len(ps.tracer)),
+		}
+		copy(newStack.data, ps.data)
+		copy(newStack.tracer, ps.tracer)
+		return newStack
+	} else {
+		newStack := &Stack{
+			data: make([]uint256.Int, len(ps.data)),
+		}
+		copy(newStack.data, ps.data)
+		return newStack
+	}
+}
+
 func (ps *PreStack) override(tu TracingUnit) {
-	ps.tracer[ps.len()-1] = tu
+	ps.tracer[ps.len(false)-1] = tu
 }
 
 // Back returns the n'th item in stack
 func (ps *PreStack) Back(n int) *uint256.Int {
-	return &ps.data[ps.len()-n-1]
+	return &ps.data[ps.len(true)-n-1]
 }
 
 func (ps *PreStack) BitLen(loc int) int {

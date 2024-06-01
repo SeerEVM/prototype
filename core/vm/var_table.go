@@ -1,25 +1,35 @@
 package vm
 
 import (
+	"bufio"
 	"errors"
+	"fmt"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/holiman/uint256"
+	"os"
 )
 
-const historyLen = 50
-const round = 20
+const sweepRound = 70
+const statisticsRound = 200
 const threshold = 0.2
 
 // VarTable records the information of branch relevant to state variables
 type VarTable struct {
 	Space map[common.Address]*SubTable
 	Epoch int
+	// for test the ratio of state variable-related branches
+	BranchNum    int
+	StateRelated int
+	txNum        int
 }
 
 func CreateNewTable() *VarTable {
 	return &VarTable{
-		Space: make(map[common.Address]*SubTable),
-		Epoch: 0,
+		Space:        make(map[common.Address]*SubTable),
+		Epoch:        0,
+		BranchNum:    0,
+		StateRelated: 0,
+		txNum:        0,
 	}
 }
 
@@ -54,14 +64,15 @@ func (vt *VarTable) VarExist(address common.Address, slot common.Hash, offset ui
 	return true
 }
 
-// AddHistory adds the latest actual branch direction into the branch history list
+// AddHistory adds the latest actual branch direction and update the perceptron weight
 func (vt *VarTable) AddHistory(branch *BranchContext) error {
 	contractAddr := branch.GetAddr()
 	sub, err := vt.GetSubTable(contractAddr)
 	if err != nil {
 		return err
 	}
-	slot := branch.GetStateUnit().GetSlot()
+	sUnit, _ := branch.GetStateUnit().(*StateUnit)
+	slot := sUnit.GetSlot()
 	entry, err2 := sub.GetEntry(slot.Bytes32())
 	if err2 != nil {
 		return err2
@@ -69,29 +80,70 @@ func (vt *VarTable) AddHistory(branch *BranchContext) error {
 	offset := branch.GetStateUnit().GetOffset()
 	branchID := branch.GetBranchID()
 	direction := branch.GetBranchDirection()
-	entry.addHistory(offset, branchID, direction)
+	res := Bool2branchRes(direction)
+	entry.Update(offset, branchID, res)
 	return nil
 }
 
 func (vt *VarTable) GetEpoch() int { return vt.Epoch }
 
-// Sweep sweeps the storage space every $round$ epoch
+// Sweep sweeps the storage space every $sweepRound$ epoch
 func (vt *VarTable) Sweep() {
 	vt.Epoch++
-	if vt.Epoch%round == 0 {
-		go func() {
-			for cAddr, subTable := range vt.Space {
-				if len(subTable.Space) == 0 {
-					delete(vt.Space, cAddr)
+	if vt.Epoch%sweepRound == 0 {
+		for cAddr, subTable := range vt.Space {
+			if len(subTable.Space) == 0 {
+				delete(vt.Space, cAddr)
+			}
+			for slot, entry := range subTable.Space {
+				if len(entry.space) == 0 {
+					delete(subTable.Space, slot)
 				}
-				for slot, entry := range subTable.Space {
-					if len(entry.space) == 0 {
-						delete(subTable.Space, slot)
+				entry.sweeper.sweep(vt.Epoch, entry.space)
+			}
+		}
+	}
+}
+
+// Statistics calculates the ratio of state variable-related branches and the ratio of regular branches every $statisticsRound$ epoch
+func (vt *VarTable) Statistics(txNum int, fileName string) {
+	vt.txNum += txNum
+	file, err := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	if err != nil {
+		fmt.Printf("open error: %v\n", err)
+	}
+	defer file.Close()
+
+	if vt.Epoch%statisticsRound == 0 {
+		writer := bufio.NewWriter(file)
+		fmt.Fprintf(writer, "The ratio of state variable-related branches is: %.2f\n", float64(vt.StateRelated)/float64(vt.BranchNum))
+		fmt.Fprintf(writer, "The average number of state variable-related branches each tx is: %.2f\n", float64(vt.StateRelated)/float64(vt.txNum))
+		vt.BranchNum = 0
+		vt.StateRelated = 0
+		vt.txNum = 0
+		regular := 0
+		totalNum := 0
+		for _, subTable := range vt.Space {
+			for _, entry := range subTable.Space {
+				for _, branchMap := range entry.space {
+					for _, branch := range branchMap {
+						length := branch.perceptron.historyLength
+						if length == HISTORY_LENGTH_MIN {
+							totalNum++
+							if branch.isRegular() {
+								regular++
+							}
+						}
 					}
-					go entry.sweeper.sweep(vt.Epoch, entry.space)
 				}
 			}
-		}()
+		}
+		fmt.Fprintf(writer, "The ratio of regular branches is: %.2f\n", float64(regular)/float64(totalNum))
+
+		err = writer.Flush()
+		if err != nil {
+			fmt.Printf("flush error: %v\n", err)
+		}
 	}
 }
 
@@ -140,13 +192,11 @@ func (en *Entry) BranchExist(offset uint256.Int, branchID string) bool {
 	return true
 }
 
-func (en *Entry) GenerateBranchInfo(funcSig string, offset, value uint256.Int, isVar bool, varInfo *VarInfo, epoch int) {
-	branch := newBranchInfo(value, isVar, varInfo, epoch)
-	branchID := GenerateBranchID(funcSig, isVar, varInfo, value)
-	branch.setID(branchID)
+func (en *Entry) GenerateBranchInfo(branchID string, offset, value uint256.Int, isVar bool, varInfo *VarInfo, epoch int) {
+	branch := newBranchInfo(branchID, value, isVar, varInfo, epoch)
 	branchMap, ok := en.space[offset.String()]
 	if ok {
-		if _, ok2 := branchMap[branchID]; ok2 {
+		if _, ok2 := branchMap[branchID]; !ok2 {
 			branchMap[branchID] = branch
 		}
 	} else {
@@ -156,23 +206,55 @@ func (en *Entry) GenerateBranchInfo(funcSig string, offset, value uint256.Int, i
 	}
 }
 
-func (en *Entry) addHistory(offset uint256.Int, branchID string, taken bool) {
+//func (en *Entry) addHistory(offset uint256.Int, branchID string, taken bool) {
+//	branchMap := en.space[offset.String()]
+//	branch := branchMap[branchID]
+//	branch.history = append(branch.history, taken)
+//	// 如果分支历史满了，删除第一个元素，实现实时更新
+//	if len(branch.history) > historyLen {
+//		branch.history = branch.history[1:]
+//	}
+//}
+//
+//func (en *Entry) GetHistory(offset uint256.Int, branchID string) ([]bool, error) {
+//	if en.BranchExist(offset, branchID) {
+//		branchMap := en.space[offset.String()]
+//		branch := branchMap[branchID]
+//		return branch.history, nil
+//	}
+//	return nil, errors.New("cannot find branch history")
+//}
+
+// Predict calls the predict function of the perceptron model
+func (en *Entry) Predict(offset uint256.Int, branchID string) int {
 	branchMap := en.space[offset.String()]
-	branch := branchMap[branchID]
-	branch.history = append(branch.history, taken)
-	// 如果分支历史满了，删除第一个元素，实现实时更新
-	if len(branch.history) > historyLen {
-		branch.history = branch.history[1:]
+	branch, ok := branchMap[branchID]
+	if ok {
+		model := branch.getPerceptron()
+		res := model.predict(false)
+		model.lastPred = append(model.lastPred, res)
+		if res == taken || res == notTaken {
+			branchMap[branchID].regular = true
+		} else {
+			branchMap[branchID].regular = false
+		}
+		return res
 	}
+	return uncertain
 }
 
-func (en *Entry) GetHistory(offset uint256.Int, branchID string) ([]bool, error) {
-	if en.BranchExist(offset, branchID) {
-		branchMap := en.space[offset.String()]
-		branch := branchMap[branchID]
-		return branch.history, nil
+// Update calls the weight update function of the perceptron model
+func (en *Entry) Update(offset uint256.Int, branchID string, dir int) {
+	branchMap := en.space[offset.String()]
+	branch, ok := branchMap[branchID]
+	if ok {
+		model := branch.getPerceptron()
+		if len(model.lastPred) == 0 {
+			model.update(dir, model.predict(true))
+		} else {
+			model.update(dir, model.lastPred[0])
+		}
 	}
-	return nil, errors.New("cannot find branch history")
 }
 
 func (en *Entry) GetJudgementVal(offset uint256.Int, branchID string) (*VarInfo, uint256.Int) {
@@ -196,7 +278,7 @@ func createNewEntry(isCompact bool) *Entry {
 	return &Entry{
 		space:     make(map[string]map[string]*branchInfo),
 		isCompact: isCompact,
-		sweeper:   newSweeper(round, threshold),
+		sweeper:   newSweeper(sweepRound, threshold),
 	}
 }
 
@@ -221,10 +303,10 @@ func (s *Sweeper) sweep(epoch int, entry map[string]map[string]*branchInfo) {
 			continue
 		}
 		for id, branch := range branchMap {
-			length := len(branch.history)
+			frequency := branch.getFrequency()
 			lifeCycle := epoch - branch.getCreationEpoch()
-			frequency := float32(length) / float32(lifeCycle)
-			if frequency < s.threshold {
+			ratio := float32(frequency) / float32(lifeCycle)
+			if ratio < s.threshold {
 				delete(branchMap, id)
 			}
 		}
@@ -236,12 +318,13 @@ func (s *Sweeper) getThreshold() float32 { return s.threshold }
 
 // branchInfo defines a struct for storing relevant branch information
 type branchInfo struct {
-	id       string
-	value    uint256.Int
-	isVar    bool
-	varInfo  *VarInfo
-	history  []bool
-	creation int // record the epoch of creation
+	id         string
+	value      uint256.Int
+	isVar      bool
+	varInfo    *VarInfo
+	perceptron *perceptron // instance of a perceptron model
+	creation   int         // record the epoch of creation
+	regular    bool        // record if the branch has a regular direction history
 }
 
 type VarInfo struct {
@@ -258,18 +341,22 @@ func NewVarInfo(slot, offset uint256.Int, bits int) *VarInfo {
 	}
 }
 
-func newBranchInfo(value uint256.Int, isVar bool, varInfo *VarInfo, creation int) *branchInfo {
+func newBranchInfo(id string, value uint256.Int, isVar bool, varInfo *VarInfo, creation int) *branchInfo {
 	return &branchInfo{
-		value:    value,
-		isVar:    isVar,
-		varInfo:  varInfo,
-		history:  make([]bool, 0, historyLen),
-		creation: creation,
+		id:         id,
+		value:      value,
+		isVar:      isVar,
+		varInfo:    varInfo,
+		perceptron: initPerceptron(),
+		creation:   creation,
+		regular:    false,
 	}
 }
 
-func (br *branchInfo) getCreationEpoch() int { return br.creation }
-func (br *branchInfo) setID(id string)       { br.id = id }
+func (br *branchInfo) isRegular() bool            { return br.regular }
+func (br *branchInfo) getPerceptron() *perceptron { return br.perceptron }
+func (br *branchInfo) getCreationEpoch() int      { return br.creation }
+func (br *branchInfo) getFrequency() int          { return br.getPerceptron().historyLength }
 
 // GenerateBranchID generates a unique ID for a branch
 func GenerateBranchID(funcSig string, isVar bool, varInfo *VarInfo, value uint256.Int) string {
