@@ -34,14 +34,14 @@ go mod tidy
 
 **Dataset:**
 
-Due to the size of the dataset used in our paper exceeding 100 GB, we have trimmed the dataset to facilitate artifact evaluation. We provide two Ethereum datasets, each spanning 1000 blocks (including state data):
+Due to the size of the dataset used in our paper exceeding 100 GB, we have trimmed the dataset to facilitate artifact evaluation. We provide two Ethereum datasets, each spanning 1,000 blocks (including state data):
 
 - Block height ranging from 14,000,000 ~ 14,001,000, shown in `./ethereumdata_1400w_small`
 - Block height ranging from 14,650,000 ~ 14,651,000, shown in `./ethereumdata_1465w_small`
 
 ## Usage
 
-Here, we show how to produce the experimental results shown in our paper step by step. All the test scripts are presented in the directory `./experiments`. Note that due to the different idle state of the machine's resources, it is normal for the reproducible results to have slight deviations. 
+Here, we show how to produce the experimental results shown in our paper step by step. All the test scripts are presented in the directory `./experiments`. Note that due to the different idle states of the machine's resources, it is normal for the reproducible results to have slight deviations. 
 
 #### 1.1 Prediction accuracy
 
