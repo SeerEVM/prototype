@@ -110,7 +110,7 @@ To obtain the speedup performance under design breakdown, run the script `speedu
 ./speedup_breakdown.sh
 ```
 
-This script run would output the speedup over serial execution of different variants of Seer, shown in ``speedup_perTx_$name.txt`, corresponding to Figure.14 (c) in the paper. `$name` refers to different variants of Seer, i.e., `basic`, `repair`, `perceptron`, `full`. 
+This script run would output the speedup over serial execution of different variants of Seer, shown in `speedup_perTx_$name.txt`, corresponding to Figure.14 (c) in the paper. `$name` refers to different variants of Seer, i.e., `basic`, `repair`, `perceptron`, `full`. 
 
 #### 1.6 Memory cost
 
