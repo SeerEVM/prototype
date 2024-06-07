@@ -28,7 +28,7 @@ export PATH=$PATH:/usr/local/go/bin
 - Install Go-related modules/packages
 
 ```shell script
-# Under the current directory `SeerEVM`
+# Under the current directory
 go mod tidy
 ```
 
