@@ -21,9 +21,9 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/params"
 	"math/big"
-	"prophetEVM/core/state"
-	"prophetEVM/core/types"
-	"prophetEVM/core/vm"
+	"seerEVM/core/state"
+	"seerEVM/core/types"
+	"seerEVM/core/vm"
 )
 
 // StatePrefetcher is a basic Prefetcher, which blindly executes a block on top

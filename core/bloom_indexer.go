@@ -23,9 +23,9 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/bitutil"
 	"github.com/ethereum/go-ethereum/ethdb"
-	"prophetEVM/core/bloombits"
-	"prophetEVM/core/rawdb"
-	"prophetEVM/core/types"
+	"seerEVM/core/bloombits"
+	"seerEVM/core/rawdb"
+	"seerEVM/core/types"
 )
 
 const (

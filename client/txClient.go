@@ -7,8 +7,8 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"math/big"
 	"math/rand"
-	"prophetEVM/core/types"
-	"prophetEVM/database"
+	"seerEVM/core/types"
+	"seerEVM/database"
 	"sort"
 	"time"
 )
@@ -71,7 +71,7 @@ func (fc *FakeClient) generateTxs(db ethdb.Database, txNum int, startingHeight, 
 	}
 }
 
-func (fc *FakeClient) Run(db ethdb.Database, txNum int, startingHeight, offset int64, directlyUsed, largeBlock bool, blk *types.Block, ratio float64) *types.Block {
+func (fc *FakeClient) Run(db ethdb.Database, txNum int, startingHeight, offset int64, directlyUsed, largeBlock, preTest bool, blk *types.Block, ratio float64) *types.Block {
 	// 将交易分为两部分，一部分是先发送的，以ratio概率随机选择一部分交易滞后发送，模拟乱序过程
 	var newTxs []*types.Transaction
 	var sortedTxs []*types.Transaction
@@ -131,11 +131,19 @@ func (fc *FakeClient) Run(db ethdb.Database, txNum int, startingHeight, offset i
 	fc.Tip <- tipMap
 	fc.TxSource <- sortedTxs
 
-	time.Sleep(200 * time.Millisecond)
+	if preTest {
+		time.Sleep(100 * time.Millisecond)
+	} else {
+		time.Sleep(200 * time.Millisecond)
+	}
 
 	for _, disorderTx := range disorderTxs {
 		fc.Disorder <- disorderTx
-		time.Sleep(2 * time.Millisecond)
+		if preTest {
+			time.Sleep(time.Millisecond)
+		} else {
+			time.Sleep(2 * time.Millisecond)
+		}
 	}
 
 	return blk

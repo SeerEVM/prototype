@@ -25,8 +25,8 @@ import (
 	"github.com/ethereum/go-ethereum/common/prque"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
-	"prophetEVM/core/rawdb"
-	"prophetEVM/core/types"
+	"seerEVM/core/rawdb"
+	"seerEVM/core/types"
 )
 
 // ErrNotRequested is returned by the trie sync when it's requested to process a

@@ -22,7 +22,7 @@ import (
 	"errors"
 
 	"github.com/ethereum/go-ethereum/common"
-	"prophetEVM/core/types"
+	"seerEVM/core/types"
 )
 
 // NodeResolver is used for looking up trie nodes before reaching into the real

@@ -18,14 +18,14 @@ package core
 
 import (
 	"github.com/ethereum/go-ethereum/ethdb"
-	"prophetEVM/core/rawdb"
+	"seerEVM/core/rawdb"
 
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
-	"prophetEVM/core/types"
-	"prophetEVM/core/vm"
+	"seerEVM/core/types"
+	"seerEVM/core/vm"
 )
 
 // ChainContext supports retrieving headers and consensus parameters from the

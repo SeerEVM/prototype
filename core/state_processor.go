@@ -23,9 +23,9 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/params"
 	"math/big"
-	"prophetEVM/core/state"
-	"prophetEVM/core/types"
-	"prophetEVM/core/vm"
+	"seerEVM/core/state"
+	"seerEVM/core/types"
+	"seerEVM/core/vm"
 	"time"
 )
 
@@ -192,7 +192,7 @@ func accumulateRewards(config *params.ChainConfig, state *state.StateDB, header 
 	state.AddBalance(header.Coinbase, reward)
 }
 
-func accumulateRewards2(config *params.ChainConfig, state *state.IcseStateDB, header *types.Header, uncles []*types.Header) {
+func accumulateRewards2(config *params.ChainConfig, state *state.SeerStateDB, header *types.Header, uncles []*types.Header) {
 	// Ethash proof-of-work protocol constants.
 	var (
 		FrontierBlockReward       = big.NewInt(5e+18) // Block reward in wei for successfully mining a block

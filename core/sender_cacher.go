@@ -19,7 +19,7 @@ package core
 import (
 	"runtime"
 
-	"prophetEVM/core/types"
+	"seerEVM/core/types"
 )
 
 // SenderCacher is a concurrent transaction sender recoverer and cacher.

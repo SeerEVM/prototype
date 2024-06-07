@@ -30,9 +30,9 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
-	"prophetEVM/core/rawdb"
-	"prophetEVM/core/types"
-	"prophetEVM/trie"
+	"seerEVM/core/rawdb"
+	"seerEVM/core/types"
+	"seerEVM/trie"
 )
 
 // trieKV represents a trie key-value pair

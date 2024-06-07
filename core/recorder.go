@@ -3,8 +3,8 @@ package core
 import (
 	"github.com/ethereum/go-ethereum/common"
 	"math"
-	"prophetEVM/core/types"
-	"prophetEVM/core/vm"
+	"seerEVM/core/types"
+	"seerEVM/core/vm"
 )
 
 // Recorder defines a speedup recorder and calculator (for evaluation)

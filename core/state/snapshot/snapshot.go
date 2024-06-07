@@ -24,8 +24,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"prophetEVM/core/rawdb"
-	"prophetEVM/trie"
+	"seerEVM/core/rawdb"
+	"seerEVM/trie"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethdb"

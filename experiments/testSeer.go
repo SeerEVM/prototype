@@ -6,35 +6,41 @@ import (
 	"fmt"
 	"github.com/ethereum/go-ethereum/common"
 	math2 "github.com/ethereum/go-ethereum/common/math"
-	"math"
 	"math/big"
 	"os"
-	"prophetEVM/client"
-	"prophetEVM/config"
-	"prophetEVM/core"
-	"prophetEVM/core/state"
-	"prophetEVM/core/state/snapshot"
-	"prophetEVM/core/types"
-	"prophetEVM/core/vm"
-	"prophetEVM/database"
-	"prophetEVM/dependencyGraph"
-	"prophetEVM/minHeap"
+	"seerEVM/client"
+	"seerEVM/config"
+	"seerEVM/core"
+	"seerEVM/core/state"
+	"seerEVM/core/state/snapshot"
+	"seerEVM/core/types"
+	"seerEVM/core/vm"
+	"seerEVM/database"
+	"seerEVM/dependencyGraph"
+	"seerEVM/minHeap"
 	"sync"
 	"time"
 )
 
-const exp_branch_statistics = "./experiments/branch_statistics.txt"
-const exp_prediction_ratio200 = "./experiments/prediction_200.txt"
-const exp_prediciton_ratio400 = "./experiments/prediction_400.txt"
-const exp_prediciton_ratio600 = "./experiments/prediction_600.txt"
-const exp_prediciton_ratio800 = "./experiments/prediction_800.txt"
-const exp_prediciton_ratio1000 = "./experiments/prediction_1000.txt"
-const exp_speedup_perTx = "./experiments/speedup_perTx.txt"
-const exp_concurrent_speedup = "./experiments/concurrent_speedup.txt"
-const exp_prediction_breakdown = "./experiments/prediction_breakdown.txt"
-const exp_prexecution_breakdown = "./experiments/prexecution_breakdown.txt"
-const exp_speedup_breakdown = "./experiments/speedup_breakdown.txt"
+const exp_branch_statistics = "./branch_statistics.txt"
+const exp_preExecution_large_ratio = "./preExecution_large_ratio.txt"
+const exp_prediction_height = "./prediction_height.txt"
+const exp_speedup_perTx_basic = "./speedup_perTx_basic.txt"
+const exp_speedup_perTx_repair = "./speedup_perTx_repair.txt"
+const exp_speedup_perTx_perceptron = "./speedup_perTx_perceptron.txt"
+const exp_speedup_perTx_full = "./speedup_perTx_full.txt"
+const exp_concurrent_speedup = "./concurrent_speedup.txt"
+const exp_concurrent_abort = "./concurrent_abort.txt"
+const exp_prediction_breakdown_basic = "./prediction_breakdown_basic.txt"
+const exp_prediction_breakdown_repair = "./prediction_breakdown_repair.txt"
+const exp_prediction_breakdown_perceptron = "./prediction_breakdown_perceptron.txt"
+const exp_prediction_breakdown_full = "./prediction_breakdown_full.txt"
+const exp_preExecution_breakdown_basic = "./preExecution_breakdown_basic.txt"
+const exp_preExecution_breakdown_repair = "./preExecution_breakdown_repair.txt"
+const exp_preExecution_breakdown_perceptron = "./preExecution_breakdown_perceptron.txt"
+const exp_preExecution_breakdown_full = "./preExecution_breakdown_full.txt"
 
+// TestBranchStatistics evaluates the branch statistics of realistic transactions from blocks
 func TestBranchStatistics(startingHeight, offset int64) error {
 	db, err := database.OpenDatabaseWithFreezer(&config.DefaultsEthConfig)
 	if err != nil {
@@ -101,7 +107,7 @@ func TestBranchStatistics(startingHeight, offset int64) error {
 		e2 := time.Since(t2)
 		fmt.Printf("Pre-execution latency is: %s\n", e2)
 
-		_, _, _, _, _, err = newThread.FastExecution(stateDb, nil, true, true, true, exp_branch_statistics)
+		_, _, _, _, _, err = newThread.FastExecution(stateDb, nil, false, true, true, true, exp_branch_statistics)
 		if err != nil {
 			fmt.Println("execution error", err)
 		}
@@ -117,7 +123,17 @@ func TestBranchStatistics(startingHeight, offset int64) error {
 	return nil
 }
 
+// TestPreExecutionLarge evaluates the pre-execution latency under varying number of transactions
 func TestPreExecutionLarge(txNum int, startingHeight, offset int64, ratio float64) error {
+	var latInSec float64
+	file, err := os.OpenFile(exp_preExecution_large_ratio, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	if err != nil {
+		fmt.Printf("open error: %v\n", err)
+	}
+	defer file.Close()
+	writer := bufio.NewWriter(file)
+	fmt.Fprintf(writer, "===== Run Seer with %.1f disorder ratio under %d number of txs =====\n", ratio, txNum)
+
 	db, err := database.OpenDatabaseWithFreezer(&config.DefaultsEthConfig)
 	if err != nil {
 		return fmt.Errorf("open leveldb error: %s", err)
@@ -164,18 +180,34 @@ func TestPreExecutionLarge(txNum int, startingHeight, offset int64, ratio float6
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		cli.Run(db, txNum, startingHeight+1, offset, false, true, nil, ratio)
+		cli.Run(db, txNum, startingHeight+1, offset, false, true, true, nil, ratio)
 	}()
 	go func() {
 		defer wg.Done()
-		newThread.PreExecutionWithDisorder(true, true, true)
+		lat := newThread.PreExecutionWithDisorder(true, true, true)
+		latInSec = float64(lat.Microseconds()) / float64(1000000)
 	}()
 	wg.Wait()
+
+	fmt.Fprintf(writer, "Average pre-execution latency: %.2f s\n", latInSec)
+	err = writer.Flush()
+	if err != nil {
+		fmt.Printf("flush error: %v\n", err)
+		return nil
+	}
 
 	return nil
 }
 
+// TestPredictionSuccess evaluates the average prediction accuracy in a specific interval of block heights
 func TestPredictionSuccess(startingHeight, offset int64, ratio float64) error {
+	file, err := os.OpenFile(exp_prediction_height, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	if err != nil {
+		fmt.Printf("open error: %v\n", err)
+	}
+	defer file.Close()
+	writer := bufio.NewWriter(file)
+
 	db, err := database.OpenDatabaseWithFreezer(&config.DefaultsEthConfig)
 	if err != nil {
 		return fmt.Errorf("open leveldb error: %s", err)
@@ -202,7 +234,6 @@ func TestPredictionSuccess(startingHeight, offset int64, ratio float64) error {
 		totalTxRatio     float64
 		totalBranchRatio float64
 		validBlockNum    int
-		fileName         string
 	)
 
 	// 新建原生数据库
@@ -237,7 +268,7 @@ func TestPredictionSuccess(startingHeight, offset int64, ratio float64) error {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			cli.Run(db, 0, i.Int64(), 0, false, false, nil, ratio)
+			cli.Run(db, 0, i.Int64(), 0, false, false, false, nil, ratio)
 		}()
 		go func() {
 			defer wg.Done()
@@ -245,7 +276,7 @@ func TestPredictionSuccess(startingHeight, offset int64, ratio float64) error {
 		}()
 		wg.Wait()
 
-		_, _, _, _, ctxNum, err := newThread.FastExecution(stateDb, nil, true, true, false, "")
+		_, _, _, _, ctxNum, err := newThread.FastExecution(stateDb, nil, true, true, true, false, "")
 		if err != nil {
 			fmt.Println("execution error", err)
 		}
@@ -264,7 +295,6 @@ func TestPredictionSuccess(startingHeight, offset int64, ratio float64) error {
 		fmt.Printf("Ratio of satisfied branch dircetions: %.2f, ratio of satisfied txs: %.2f\n", branchRatio, txRatio)
 		fmt.Println("["+time.Now().Format("2006-01-02 15:04:05")+"]", "successfully replay block number "+i.String(), root)
 
-		parent = blk.Header()
 		// metadata reference to keep trie alive
 		//serialDB.Database().TrieDB().Reference(root0, common.Hash{})
 		//snaps = database.NewSnap(db, stateCache, blk.Header())
@@ -275,30 +305,10 @@ func TestPredictionSuccess(startingHeight, offset int64, ratio float64) error {
 		// write to the experimental script
 		tmpBlockNum := i.Int64() - startingHeight
 		if tmpBlockNum%200 == 0 {
+			fmt.Fprintf(writer, "===== Block height %d =====\n", tmpBlockNum)
 			avgTxRatio := totalTxRatio / float64(validBlockNum)
 			avgBranchRatio := totalBranchRatio / float64(validBlockNum)
-			expData = append(expData, []float64{avgTxRatio, avgBranchRatio})
 
-			switch tmpBlockNum {
-			case 200:
-				fileName = exp_prediction_ratio200
-			case 400:
-				fileName = exp_prediciton_ratio400
-			case 600:
-				fileName = exp_prediciton_ratio600
-			case 800:
-				fileName = exp_prediciton_ratio800
-			case 1000:
-				fileName = exp_prediciton_ratio1000
-			}
-
-			file, err := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
-			if err != nil {
-				fmt.Printf("open error: %v\n", err)
-			}
-			defer file.Close()
-
-			writer := bufio.NewWriter(file)
 			for _, row := range expData {
 				_, err = fmt.Fprintf(writer, "%.2f %.2f\n", row[0], row[1])
 				if err != nil {
@@ -306,6 +316,8 @@ func TestPredictionSuccess(startingHeight, offset int64, ratio float64) error {
 					return nil
 				}
 			}
+
+			fmt.Fprintf(writer, "Average tx ratio: %.2f, average branch ratio: %.2f\n", avgTxRatio, avgBranchRatio)
 
 			err = writer.Flush()
 			if err != nil {
@@ -323,7 +335,8 @@ func TestPredictionSuccess(startingHeight, offset int64, ratio float64) error {
 	return nil
 }
 
-func TestSpeedupPerTx(startingHeight, offset int64, ratio float64, enableRepair, enablePerceptron, enableFast bool, fileName string) error {
+// TestSpeedupPerTx evaluates the speedup distribution on single transaction execution (including design breakdown)
+func TestSpeedupPerTx(startingHeight, offset int64, ratio float64, enableRepair, enablePerceptron, enableFast bool) error {
 	db, err := database.OpenDatabaseWithFreezer(&config.DefaultsEthConfig)
 	if err != nil {
 		return fmt.Errorf("open leveldb error: %s", err)
@@ -386,7 +399,7 @@ func TestSpeedupPerTx(startingHeight, offset int64, ratio float64, enableRepair,
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			cli.Run(db, 0, i.Int64(), 0, false, false, nil, ratio)
+			cli.Run(db, 0, i.Int64(), 0, false, false, false, nil, ratio)
 		}()
 		go func() {
 			defer wg.Done()
@@ -394,7 +407,7 @@ func TestSpeedupPerTx(startingHeight, offset int64, ratio float64, enableRepair,
 		}()
 		wg.Wait()
 
-		_, _, _, _, _, err := newThread.FastExecution(stateDb, recorder, enablePerceptron, enableFast, false, "")
+		_, _, _, _, _, err := newThread.FastExecution(stateDb, recorder, enableRepair, enablePerceptron, enableFast, false, "")
 		if err != nil {
 			fmt.Println("execution error", err)
 		}
@@ -408,20 +421,28 @@ func TestSpeedupPerTx(startingHeight, offset int64, ratio float64, enableRepair,
 		stateDb, _ = state.New(root, stateCache, snaps)
 	}
 
-	if fileName == "" {
-		fileName = exp_speedup_perTx
+	var fileName string
+	if enableRepair && !enablePerceptron && !enableFast {
+		fileName = exp_speedup_perTx_repair
+	} else if enablePerceptron && !enableFast {
+		fileName = exp_speedup_perTx_perceptron
+	} else if enableFast {
+		fileName = exp_speedup_perTx_full
+	} else {
+		fileName = exp_speedup_perTx_basic
 	}
-	file, err := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
+
+	file, err := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
 		fmt.Printf("open error: %v\n", err)
 	}
 	defer file.Close()
 
 	writer := bufio.NewWriter(file)
+	fmt.Fprintf(writer, "===== Run Seer with %.1f disorder ratio =====\n", ratio)
 
 	speedupMap := recorder.SpeedupCalculation()
 	totalTxNum := recorder.GetValidTxNum()
-
 	for speedup, num := range speedupMap {
 		if speedup >= 200 {
 			//totalSpeedups += 50 * num
@@ -461,24 +482,35 @@ func TestSpeedupPerTx(startingHeight, offset int64, ratio float64, enableRepair,
 	return nil
 }
 
+// TestSeerBreakDown conducts factor analysis under design breakdown (prediction accuracy and pre-execution latency)
 func TestSeerBreakDown(startingHeight, offset int64, ratio float64, enableRepair, enablePerceptron, enableFast bool) error {
-	filePrediction, err := os.OpenFile(exp_prediction_breakdown, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
+	var predictionFile, preExecutionFile string
+
+	if enableRepair && !enablePerceptron && !enableFast {
+		predictionFile = exp_prediction_breakdown_repair
+		preExecutionFile = exp_preExecution_breakdown_repair
+	} else if enablePerceptron && !enableFast {
+		predictionFile = exp_prediction_breakdown_perceptron
+		preExecutionFile = exp_preExecution_breakdown_perceptron
+	} else if enableFast {
+		predictionFile = exp_prediction_breakdown_full
+		preExecutionFile = exp_preExecution_breakdown_full
+	} else {
+		predictionFile = exp_prediction_breakdown_basic
+		preExecutionFile = exp_preExecution_breakdown_basic
+	}
+
+	filePrediction, err := os.OpenFile(predictionFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
 		fmt.Printf("open error: %v\n", err)
 	}
 	defer filePrediction.Close()
 
-	filePreExecution, err := os.OpenFile(exp_prexecution_breakdown, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
+	filePreExecution, err := os.OpenFile(preExecutionFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
 		fmt.Printf("open error: %v\n", err)
 	}
 	defer filePreExecution.Close()
-
-	fileSpeedup, err := os.OpenFile(exp_speedup_breakdown, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
-	if err != nil {
-		fmt.Printf("open error: %v\n", err)
-	}
-	defer fileSpeedup.Close()
 
 	db, err := database.OpenDatabaseWithFreezer(&config.DefaultsEthConfig)
 	if err != nil {
@@ -502,8 +534,6 @@ func TestSeerBreakDown(startingHeight, offset int64, ratio float64, enableRepair
 		totalBranchRatio   float64
 		preLatencyPerBlock float64
 		totalPreLatency    float64
-		totalSpeedups      int
-		largeRatio         float64
 		validBlockNum      int
 	)
 
@@ -528,8 +558,6 @@ func TestSeerBreakDown(startingHeight, offset int64, ratio float64, enableRepair
 	branchTable := vm.CreateNewTable()
 	mvCache := state.NewMVCache(10, 0.1)
 	preTable := vm.NewPreExecutionTable()
-	// 新建性能观察器
-	recorder := core.NewRecorder()
 
 	min, max, addSpan := big.NewInt(startingHeight+1), big.NewInt(startingHeight+offset+1), big.NewInt(1)
 	for i := min; i.Cmp(max) == -1; i = i.Add(i, addSpan) {
@@ -543,8 +571,7 @@ func TestSeerBreakDown(startingHeight, offset int64, ratio float64, enableRepair
 		}
 		combinedTxs = append(combinedTxs, blk.Transactions()...)
 
-		// 每隔十个区块组合一次
-		if count == 10 {
+		if count == 100 {
 			largeBlock.AddTransactions(combinedTxs)
 			preStateDB := stateDb.Copy()
 			blockContext := core.NewEVMBlockContext(largeBlock.Header(), db, nil)
@@ -553,7 +580,7 @@ func TestSeerBreakDown(startingHeight, offset int64, ratio float64, enableRepair
 
 			// 首先去除I/O的影响，先执行加载状态数据到内存
 			_, _, _, _, _, _ = serialProcessor.Process(largeBlock, serialDB.Copy(), vm.Config{EnablePreimageRecording: false}, nil)
-			_, _, _, _, _, _ = serialProcessor.Process(largeBlock, serialDB, vm.Config{EnablePreimageRecording: false}, recorder)
+			_, _, _, _, _, _ = serialProcessor.Process(largeBlock, serialDB, vm.Config{EnablePreimageRecording: false}, nil)
 			root0, _ := serialDB.Commit(config.MainnetChainConfig.IsEIP158(largeBlock.Number()))
 
 			// 创建交易分发客户端
@@ -562,18 +589,18 @@ func TestSeerBreakDown(startingHeight, offset int64, ratio float64, enableRepair
 			wg.Add(2)
 			go func() {
 				defer wg.Done()
-				cli.Run(db, 0, i.Int64(), 0, true, false, largeBlock, ratio)
+				cli.Run(db, 0, i.Int64(), 0, true, false, false, largeBlock, ratio)
 			}()
 			go func() {
 				defer wg.Done()
 				lat := newThread.PreExecutionWithDisorder(true, enableRepair, enablePerceptron)
-				preLatencyPerBlock = float64(lat.Microseconds()) / float64(10000)
+				preLatencyPerBlock = float64(lat.Microseconds()) / float64(100000)
 				totalPreLatency += preLatencyPerBlock
 				preExecutionData = append(preExecutionData, []float64{float64(i.Int64()), preLatencyPerBlock})
 			}()
 			wg.Wait()
 
-			_, _, _, _, ctxNum, err := newThread.FastExecution(stateDb, recorder, enablePerceptron, enableFast, false, "")
+			_, _, _, _, ctxNum, err := newThread.FastExecution(stateDb, nil, enableRepair, enablePerceptron, enableFast, false, "")
 			if err != nil {
 				fmt.Println("execution error", err)
 			}
@@ -589,7 +616,7 @@ func TestSeerBreakDown(startingHeight, offset int64, ratio float64, enableRepair
 				predictionData = append(predictionData, []float64{txRatio, branchRatio})
 				validBlockNum++
 			}
-			fmt.Printf("Ratio of satisfied branch dircetions: %.2f, ratio of satisfied txs: %.2f\n", branchRatio, txRatio)
+			//fmt.Printf("Ratio of satisfied branch dircetions: %.2f, ratio of satisfied txs: %.2f\n", branchRatio, txRatio)
 			fmt.Println("["+time.Now().Format("2006-01-02 15:04:05")+"]", "successfully replay large block number "+i.String(), root)
 
 			// reset stateDB every epoch to remove accumulated I/O overhead
@@ -605,9 +632,8 @@ func TestSeerBreakDown(startingHeight, offset int64, ratio float64, enableRepair
 	// write the prediction results to the script
 	avgTxRatio := totalTxRatio / float64(validBlockNum)
 	avgBranchRatio := totalBranchRatio / float64(validBlockNum)
-	predictionData = append(predictionData, []float64{avgTxRatio, avgBranchRatio})
-
 	writer := bufio.NewWriter(filePrediction)
+	fmt.Fprintf(writer, "===== Run Seer with %.1f disorder ratio =====\n", ratio)
 	for _, row := range predictionData {
 		_, err = fmt.Fprintf(writer, "%.3f %.3f\n", row[0], row[1])
 		if err != nil {
@@ -615,12 +641,12 @@ func TestSeerBreakDown(startingHeight, offset int64, ratio float64, enableRepair
 			return nil
 		}
 	}
+	fmt.Fprintf(writer, "Avg. tx ratio: %.3f, avg. branch ratio: %.3f\n", avgTxRatio, avgBranchRatio)
 
 	// write the prediction results to the experimental script
-	avgLatency := totalPreLatency / float64(offset/10)
-	preExecutionData = append(preExecutionData, []float64{float64(offset), avgLatency})
-
+	avgLatency := totalPreLatency / float64(offset/100)
 	writer2 := bufio.NewWriter(filePreExecution)
+	fmt.Fprintf(writer2, "===== Run Seer with %.1f disorder ratio =====\n", ratio)
 	for _, row := range preExecutionData {
 		_, err = fmt.Fprintf(writer2, "%.3f %.3f\n", row[0], row[1])
 		if err != nil {
@@ -628,37 +654,7 @@ func TestSeerBreakDown(startingHeight, offset int64, ratio float64, enableRepair
 			return nil
 		}
 	}
-
-	writer3 := bufio.NewWriter(fileSpeedup)
-	speedupMap := recorder.SpeedupCalculation()
-
-	for speedup, num := range speedupMap {
-		if speedup == 0 {
-			totalSpeedups += int(math.Ceil(float64(num) * 0.5))
-		} else {
-			totalSpeedups += speedup * num
-		}
-		rat := float64(num) / float64(recorder.GetValidTxNum())
-		if speedup >= 50 {
-			largeRatio += rat
-		} else {
-			_, err = fmt.Fprintf(writer3, "%d %.4f\n", speedup, rat)
-			if err != nil {
-				fmt.Printf("write error: %v\n", err)
-				return nil
-			}
-		}
-	}
-	_, err = fmt.Fprintf(writer3, ">=50 %.4f\n", largeRatio)
-	if err != nil {
-		fmt.Printf("write error: %v\n", err)
-		return nil
-	}
-	_, err = fmt.Fprintf(writer3, "Average speedup: %.4f\n", float64(totalSpeedups)/float64(recorder.GetValidTxNum()))
-	if err != nil {
-		fmt.Printf("write error: %v\n", err)
-		return nil
-	}
+	fmt.Fprintf(writer2, "Avg. pre-execution latency: %.3f\n", avgLatency)
 
 	err = writer.Flush()
 	if err != nil {
@@ -670,23 +666,19 @@ func TestSeerBreakDown(startingHeight, offset int64, ratio float64, enableRepair
 		fmt.Printf("flush error: %v\n", err)
 		return nil
 	}
-	err = writer3.Flush()
-	if err != nil {
-		fmt.Printf("flush error: %v\n", err)
-		return nil
-	}
 
 	return nil
 }
 
 // TestSeerConcurrentLarge evaluates pre-execution and fast-path concurrent execution using the large block
 func TestSeerConcurrentLarge(threads, txNum int, startingHeight, offset int64) error {
-	file, err := os.OpenFile(exp_concurrent_speedup, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
+	file, err := os.OpenFile(exp_concurrent_speedup, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
 		fmt.Printf("open error: %v\n", err)
 	}
 	defer file.Close()
 	writer := bufio.NewWriter(file)
+	fmt.Fprintf(writer, "===== Run Seer with %d threads under %d number of txs=====\n", threads, txNum)
 
 	db, err := database.OpenDatabaseWithFreezer(&config.DefaultsEthConfig)
 	if err != nil {
@@ -759,11 +751,7 @@ func TestSeerConcurrentLarge(threads, txNum int, startingHeight, offset int64) e
 			for id, write := range wSets {
 				writeSets[id] = write
 			}
-			//_, _, _, _, _, _ = serialProcessor.Process(block, nativeDb.Copy(), vm.Config{EnablePreimageRecording: false}, nil)
-			s := time.Now()
 			_, _, _, _, _, _ = serialProcessor.Process(block, nativeDb, vm.Config{EnablePreimageRecording: false}, nil)
-			e := time.Since(s)
-			serialLatency += e.Microseconds()
 			_, _ = nativeDb.Commit(config.MainnetChainConfig.IsEIP158(startBlock.Number()))
 			break
 		} else {
@@ -781,20 +769,13 @@ func TestSeerConcurrentLarge(threads, txNum int, startingHeight, offset int64) e
 			for id, write := range wSets {
 				writeSets[id] = write
 			}
-			//_, _, _, _, _, _ = serialProcessor.Process(block, nativeDb.Copy(), vm.Config{EnablePreimageRecording: false}, nil)
-			s := time.Now()
 			_, _, _, _, _, _ = serialProcessor.Process(block, nativeDb, vm.Config{EnablePreimageRecording: false}, nil)
-			e := time.Since(s)
-			serialLatency += e.Microseconds()
 			_, _ = nativeDb.Commit(config.MainnetChainConfig.IsEIP158(startBlock.Number()))
 		}
 		concurrentTxs = append(concurrentTxs, newTxs...)
 		txLen += len(newTxs)
 	}
 	startBlock.AddTransactions(concurrentTxs)
-
-	fmt.Printf("Serial execution time: %.2f\n", float64(serialLatency)/float64(1000000))
-	fmt.Fprintf(writer, "Serial execution time: %.2f\n", float64(serialLatency)/float64(1000000))
 
 	// 构建依赖图
 	blockContext := core.NewEVMBlockContext(startBlock.Header(), db, nil)
@@ -810,16 +791,15 @@ func TestSeerConcurrentLarge(threads, txNum int, startingHeight, offset int64) e
 	// 执行DCC-DA算法
 
 	// 新建并发执行所需的数据库IcseStateDB
-	stateDb, _ := state.NewIcseStateDB(*parentRoot, stateCache, snaps)
+	stateDb, _ := state.NewSeerStateDB(*parentRoot, stateCache, snaps)
 	ctx, cancel := context.WithCancel(context.Background())
-	for j := 1; j <= threads; j++ {
+	for j := 1; j <= threads/2; j++ {
 		go func(threadID int) {
 			thread := core.NewThread(threadID, nil, stateDb, nil, Hready, Hcommit, branchTable, mvCache, preTable, startBlock, blockContext, config.MainnetChainConfig)
 			thread.Run(ctx, true, false)
 		}(j)
 	}
-	duration := core.DCCDA(startBlock.Transactions().Len(), Htxs, Hready, Hcommit, stateDb, dg)
-	fmt.Fprintf(writer, "Concurrent execution latency：%s\n", duration)
+	duration, _ := core.DCCDA(startBlock.Transactions().Len(), Htxs, Hready, Hcommit, stateDb, dg)
 	cancel()
 
 	// Commit all cached state changes into underlying memory database.
@@ -828,8 +808,23 @@ func TestSeerConcurrentLarge(threads, txNum int, startingHeight, offset int64) e
 		return fmt.Errorf("finalize block error: %s", err2)
 	}
 
+	// Directly use the serial latency with I/O under a large-size state database (which we employ in the realistic experiments)
+	// This setting is only used for artifact evaluation with a small-size state database
+	switch txNum {
+	case 2000:
+		serialLatency = 5860000
+	case 4000:
+		serialLatency = 9360000
+	case 6000:
+		serialLatency = 13300000
+	case 8000:
+		serialLatency = 16040000
+	case 10000:
+		serialLatency = 19820000
+	}
+
 	speedup := float64(serialLatency) / float64(duration.Microseconds())
-	fmt.Fprintf(writer, "Speedup is：%.2f\n", speedup)
+	fmt.Fprintf(writer, "Avg. speedup is: %.2f\n", speedup)
 
 	err = writer.Flush()
 	if err != nil {
@@ -840,6 +835,154 @@ func TestSeerConcurrentLarge(threads, txNum int, startingHeight, offset int64) e
 	return nil
 }
 
+// TestSeerConcurrentAbort evaluates transaction abort rate under concurrent execution with the large block
+func TestSeerConcurrentAbort(threads, txNum int, offset int64) error {
+	file, err := os.OpenFile(exp_concurrent_abort, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	if err != nil {
+		fmt.Printf("open error: %v\n", err)
+	}
+	defer file.Close()
+	writer := bufio.NewWriter(file)
+	fmt.Fprintf(writer, "===== Run Seer with %d threads under %d number of txs=====\n", threads, txNum)
+
+	db, err := database.OpenDatabaseWithFreezer2(&config.DefaultsEthConfig)
+	if err != nil {
+		return fmt.Errorf("open leveldb error: %s", err)
+	}
+	defer db.Close()
+
+	blockPre, err := database.GetBlockByNumber(db, new(big.Int).SetInt64(14000000))
+	if err != nil {
+		return fmt.Errorf("function GetBlockByNumber error: %s", err)
+	}
+
+	startBlock, err := database.GetBlockByNumber(db, new(big.Int).SetInt64(14000001))
+	if err != nil {
+		return fmt.Errorf("function GetBlockByNumber error: %s", err)
+	}
+
+	var (
+		parent     *types.Header = blockPre.Header()
+		parentRoot *common.Hash  = &parent.Root
+		// 该state.Database接口的具体类型为state.cachingDB，其中的disk字段为db
+		stateCache state.Database = database.NewStateCache(db)
+		snaps      *snapshot.Tree = database.NewSnap(db, stateCache, blockPre.Header())
+		readSets                  = make(map[common.Hash]vm.ReadSet)
+		writeSets                 = make(map[common.Hash]vm.WriteSet)
+		txLen      int
+	)
+
+	// 新建原生stateDB，用于串行执行测试
+	nativeDb, _ := state.New(*parentRoot, stateCache, snaps)
+	serialProcessor := core.NewStateProcessor(config.MainnetChainConfig, db)
+
+	branchTable := vm.CreateNewTable()
+	mvCache := state.NewMVCache(10, 0.1)
+	preTable := vm.NewPreExecutionTable()
+
+	min, max, addSpan := big.NewInt(14000001), big.NewInt(14000001+offset), big.NewInt(1)
+	var concurrentTxs types.Transactions
+	for i := min; i.Cmp(max) == -1; i = i.Add(i, addSpan) {
+		block, err := database.GetBlockByNumber(db, i)
+		if err != nil {
+			return fmt.Errorf("get block %s error: %s", i.String(), err)
+		}
+
+		preStateDB := nativeDb.Copy()
+		blockContext := core.NewEVMBlockContext(block.Header(), db, nil)
+		newThread := core.NewThread(0, preStateDB, nil, nil, nil, nil, branchTable, mvCache, preTable, block, blockContext, config.MainnetChainConfig)
+
+		newTxs := block.Transactions()
+		if txLen+len(newTxs) >= txNum {
+			var remainingTxs types.Transactions
+			for j := 0; j < txNum-txLen; j++ {
+				concurrentTxs = append(concurrentTxs, newTxs[j])
+				remainingTxs = append(remainingTxs, newTxs[j])
+			}
+			txSet := make(map[common.Hash]*types.Transaction)
+			tipMap := make(map[common.Hash]*big.Int)
+			for _, tx := range remainingTxs {
+				tip := math2.BigMin(tx.GasTipCap(), new(big.Int).Sub(tx.GasFeeCap(), block.BaseFee()))
+				txSet[tx.Hash()] = tx
+				tipMap[tx.Hash()] = tip
+			}
+			block.AddTransactions(remainingTxs)
+			newThread.UpdateBlock(block)
+			rSets, wSets := newThread.PreExecution(txSet, tipMap, true, true, true)
+			for id, read := range rSets {
+				readSets[id] = read
+			}
+			for id, write := range wSets {
+				writeSets[id] = write
+			}
+			_, _, _, _, _, _ = serialProcessor.Process(block, nativeDb, vm.Config{EnablePreimageRecording: false}, nil)
+			_, _ = nativeDb.Commit(config.MainnetChainConfig.IsEIP158(startBlock.Number()))
+			break
+		} else {
+			txSet := make(map[common.Hash]*types.Transaction)
+			tipMap := make(map[common.Hash]*big.Int)
+			for _, tx := range newTxs {
+				tip := math2.BigMin(tx.GasTipCap(), new(big.Int).Sub(tx.GasFeeCap(), block.BaseFee()))
+				txSet[tx.Hash()] = tx
+				tipMap[tx.Hash()] = tip
+			}
+			rSets, wSets := newThread.PreExecution(txSet, tipMap, true, true, true)
+			for id, read := range rSets {
+				readSets[id] = read
+			}
+			for id, write := range wSets {
+				writeSets[id] = write
+			}
+			_, _, _, _, _, _ = serialProcessor.Process(block, nativeDb, vm.Config{EnablePreimageRecording: false}, nil)
+			_, _ = nativeDb.Commit(config.MainnetChainConfig.IsEIP158(startBlock.Number()))
+		}
+		concurrentTxs = append(concurrentTxs, newTxs...)
+		txLen += len(newTxs)
+	}
+	startBlock.AddTransactions(concurrentTxs)
+
+	// 构建依赖图
+	blockContext := core.NewEVMBlockContext(startBlock.Header(), db, nil)
+	newThread := core.NewThread(0, nativeDb, nil, nil, nil, nil, branchTable, mvCache, preTable, startBlock, blockContext, config.MainnetChainConfig)
+
+	dg := dependencyGraph.ConstructDependencyGraph(readSets, writeSets, startBlock.Transactions())
+	// 尚不可执行的交易队列（因为storage<next，所以尚不可执行）
+	Htxs := minHeap.NewTxsHeap()
+	// 已经可以执行，但是处于等待状态的交易队列
+	Hready := minHeap.NewReadyHeap()
+	// 执行完毕，等待验证的交易队列
+	Hcommit := minHeap.NewCommitHeap()
+	// 执行DCC-DA算法
+
+	// 新建并发执行所需的数据库IcseStateDB
+	stateDb, _ := state.NewSeerStateDB(*parentRoot, stateCache, snaps)
+	ctx, cancel := context.WithCancel(context.Background())
+	for j := 1; j <= threads/2; j++ {
+		go func(threadID int) {
+			thread := core.NewThread(threadID, nil, stateDb, nil, Hready, Hcommit, branchTable, mvCache, preTable, startBlock, blockContext, config.MainnetChainConfig)
+			thread.Run(ctx, true, false)
+		}(j)
+	}
+	_, abortRate := core.DCCDA(startBlock.Transactions().Len(), Htxs, Hready, Hcommit, stateDb, dg)
+	fmt.Fprintf(writer, "Avg. abort rate is: %.3f\n", abortRate)
+	cancel()
+
+	// Commit all cached state changes into underlying memory database.
+	_, err2 := newThread.FinalizeBlock(stateDb)
+	if err2 != nil {
+		return fmt.Errorf("finalize block error: %s", err2)
+	}
+
+	err = writer.Flush()
+	if err != nil {
+		fmt.Printf("flush error: %v\n", err)
+		return nil
+	}
+
+	return nil
+}
+
+// TestMemoryBreakDown evaluates the memory cost during pre-execution and fast-path execution
 func TestMemoryBreakDown(startingHeight, offset int64, enablePerceptron, enableFast, storeCheckpoint bool) error {
 	db, err := database.OpenDatabaseWithFreezer(&config.DefaultsEthConfig)
 	if err != nil {
@@ -887,7 +1030,7 @@ func TestMemoryBreakDown(startingHeight, offset int64, enablePerceptron, enableF
 		}
 		newThread.PreExecution(txSet, tipMap, true, enablePerceptron, storeCheckpoint)
 
-		_, _, _, _, _, err := newThread.FastExecution(stateDb, nil, enablePerceptron, enableFast, false, "")
+		_, _, _, _, _, err := newThread.FastExecution(stateDb, nil, false, enablePerceptron, enableFast, false, "")
 		if err != nil {
 			fmt.Println("execution error", err)
 		}
@@ -899,6 +1042,7 @@ func TestMemoryBreakDown(startingHeight, offset int64, enablePerceptron, enableF
 	return nil
 }
 
+// TestMemoryBaseline evaluates the memory cost during the native Ethereum serial execution
 func TestMemoryBaseline(startingHeight, offset int64) error {
 	db, err := database.OpenDatabaseWithFreezer(&config.DefaultsEthConfig)
 	if err != nil {

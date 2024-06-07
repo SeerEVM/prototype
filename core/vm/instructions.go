@@ -23,7 +23,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
-	"prophetEVM/core/types"
+	"seerEVM/core/types"
 )
 
 func opAdd(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {

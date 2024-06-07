@@ -25,7 +25,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
-	"prophetEVM/core/types"
+	"seerEVM/core/types"
 )
 
 // ReadTxLookupEntry retrieves the positional metadata associated with a transaction

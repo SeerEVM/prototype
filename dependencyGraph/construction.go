@@ -2,8 +2,8 @@ package dependencyGraph
 
 import (
 	"github.com/ethereum/go-ethereum/common"
-	"prophetEVM/core/types"
-	"prophetEVM/core/vm"
+	"seerEVM/core/types"
+	"seerEVM/core/vm"
 )
 
 type DependencyGraph map[int]int

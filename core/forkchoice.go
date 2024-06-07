@@ -26,7 +26,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
-	"prophetEVM/core/types"
+	"seerEVM/core/types"
 )
 
 // ChainReader defines a small collection of methods needed to access the local

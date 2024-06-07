@@ -21,7 +21,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/params"
-	"prophetEVM/core/types"
+	"seerEVM/core/types"
 )
 
 // StateDB is an EVM database for full state querying.

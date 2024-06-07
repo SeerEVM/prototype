@@ -26,7 +26,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
-	"prophetEVM/core/types"
+	"seerEVM/core/types"
 )
 
 var ErrCommitDisabled = errors.New("no database for committing")

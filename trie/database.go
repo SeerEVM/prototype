@@ -31,8 +31,8 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/rlp"
-	"prophetEVM/core/rawdb"
-	"prophetEVM/core/types"
+	"seerEVM/core/rawdb"
+	"seerEVM/core/types"
 )
 
 var (

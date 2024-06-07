@@ -31,9 +31,9 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/params"
-	"prophetEVM/core"
-	"prophetEVM/core/state"
-	"prophetEVM/core/types"
+	"seerEVM/core"
+	"seerEVM/core/state"
+	"seerEVM/core/types"
 )
 
 const (

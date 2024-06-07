@@ -18,7 +18,7 @@ package core
 
 import (
 	"github.com/ethereum/go-ethereum/common"
-	"prophetEVM/core/types"
+	"seerEVM/core/types"
 )
 
 // NewTxsEvent is posted when a batch of transactions enter the transaction pool.

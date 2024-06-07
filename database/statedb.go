@@ -3,11 +3,11 @@ package database
 import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
-	"prophetEVM/core/rawdb"
-	"prophetEVM/core/state"
-	"prophetEVM/core/state/snapshot"
-	"prophetEVM/core/types"
-	"prophetEVM/trie"
+	"seerEVM/core/rawdb"
+	"seerEVM/core/state"
+	"seerEVM/core/state/snapshot"
+	"seerEVM/core/types"
+	"seerEVM/trie"
 )
 
 func NewStateCache(db ethdb.Database) state.Database {

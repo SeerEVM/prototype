@@ -24,7 +24,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"prophetEVM/trie"
+	"seerEVM/trie"
 	"strings"
 	"time"
 
@@ -32,9 +32,9 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
-	"prophetEVM/core/rawdb"
-	"prophetEVM/core/state/snapshot"
-	"prophetEVM/core/types"
+	"seerEVM/core/rawdb"
+	"seerEVM/core/state/snapshot"
+	"seerEVM/core/types"
 )
 
 const (

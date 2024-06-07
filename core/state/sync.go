@@ -22,8 +22,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/rlp"
-	"prophetEVM/core/types"
-	"prophetEVM/trie"
+	"seerEVM/core/types"
+	"seerEVM/trie"
 )
 
 // NewStateSync create a new state trie download scheduler.

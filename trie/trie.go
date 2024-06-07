@@ -24,7 +24,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
-	"prophetEVM/core/types"
+	"seerEVM/core/types"
 )
 
 // Trie is a Merkle Patricia Trie. Use New to create a trie that sits on

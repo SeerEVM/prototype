@@ -23,7 +23,7 @@ import (
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common/math"
-	"prophetEVM/core/vm"
+	"seerEVM/core/vm"
 )
 
 // Compiler contains information about the parsed source

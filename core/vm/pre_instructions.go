@@ -22,7 +22,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
-	"prophetEVM/core/types"
+	"seerEVM/core/types"
 	"strings"
 	"sync/atomic"
 )

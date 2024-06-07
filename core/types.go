@@ -18,9 +18,9 @@ package core
 
 import (
 	"github.com/ethereum/go-ethereum/common"
-	"prophetEVM/core/state"
-	"prophetEVM/core/types"
-	"prophetEVM/core/vm"
+	"seerEVM/core/state"
+	"seerEVM/core/types"
+	"seerEVM/core/vm"
 )
 
 // Validator is an interface which defines the standard for block validation. It

@@ -22,7 +22,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/rlp"
-	"prophetEVM/core/types"
+	"seerEVM/core/types"
 )
 
 // Account is a modified version of a state.Account, where the root is replaced

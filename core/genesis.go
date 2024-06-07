@@ -23,7 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"prophetEVM/trie"
+	"seerEVM/trie"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -34,9 +34,9 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
-	"prophetEVM/core/rawdb"
-	"prophetEVM/core/state"
-	"prophetEVM/core/types"
+	"seerEVM/core/rawdb"
+	"seerEVM/core/state"
+	"seerEVM/core/types"
 )
 
 //go:generate go run github.com/fjl/gencodec -type Genesis -field-override genesisSpecMarshaling -out gen_genesis.go

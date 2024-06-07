@@ -30,7 +30,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
-	"prophetEVM/core/types"
+	"seerEVM/core/types"
 )
 
 // ReadCanonicalHash retrieves the hash assigned to a canonical block number.

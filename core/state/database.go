@@ -23,9 +23,9 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/lru"
 	"github.com/ethereum/go-ethereum/ethdb"
-	"prophetEVM/core/rawdb"
-	"prophetEVM/core/types"
-	"prophetEVM/trie"
+	"seerEVM/core/rawdb"
+	"seerEVM/core/types"
+	"seerEVM/trie"
 )
 
 const (

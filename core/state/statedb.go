@@ -30,10 +30,10 @@ import (
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
-	"prophetEVM/core/rawdb"
-	"prophetEVM/core/state/snapshot"
-	"prophetEVM/core/types"
-	"prophetEVM/trie"
+	"seerEVM/core/rawdb"
+	"seerEVM/core/state/snapshot"
+	"seerEVM/core/types"
+	"seerEVM/trie"
 )
 
 type revision struct {

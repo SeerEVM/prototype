@@ -18,7 +18,7 @@ package vm
 
 import (
 	"math/big"
-	"prophetEVM/core/state"
+	"seerEVM/core/state"
 	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/common"

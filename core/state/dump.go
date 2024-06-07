@@ -25,8 +25,8 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
-	"prophetEVM/core/types"
-	"prophetEVM/trie"
+	"seerEVM/core/types"
+	"seerEVM/trie"
 )
 
 // DumpConfig is a set of options to control what portions of the state will be

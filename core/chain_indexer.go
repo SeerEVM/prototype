@@ -28,8 +28,8 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
-	"prophetEVM/core/rawdb"
-	"prophetEVM/core/types"
+	"seerEVM/core/rawdb"
+	"seerEVM/core/types"
 )
 
 // ChainIndexerBackend defines the methods needed to process chain segments in

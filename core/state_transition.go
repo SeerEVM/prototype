@@ -24,8 +24,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	cmath "github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/params"
-	"prophetEVM/core/types"
-	"prophetEVM/core/vm"
+	"seerEVM/core/types"
+	"seerEVM/core/vm"
 )
 
 // ExecutionResult includes all output after executing given evm

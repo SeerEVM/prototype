@@ -21,7 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"prophetEVM/trie"
+	"seerEVM/trie"
 	"time"
 
 	"github.com/VictoriaMetrics/fastcache"
@@ -30,8 +30,8 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
-	"prophetEVM/core/rawdb"
-	"prophetEVM/core/types"
+	"seerEVM/core/rawdb"
+	"seerEVM/core/types"
 )
 
 var (
